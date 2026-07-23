@@ -732,6 +732,18 @@ def setup_chat_routes(
         search_context = form_data.get("search_context")  # pre-fetched web search results (compare mode)
         compare_mode = str(form_data.get("compare_mode", "")).lower() == "true"
         incognito = str(form_data.get("incognito", "")).lower() == "true"
+        
+        # Sub-chat properties extraction
+        is_subchat = str(form_data.get("is_subchat") or (body or {}).get("is_subchat") or "").lower() == "true"
+        subchat_id = form_data.get("subchat_id") or (body or {}).get("subchat_id")
+        subchat_parent_msg_id = form_data.get("subchat_parent_msg_id") or (body or {}).get("subchat_parent_msg_id")
+        subchat_highlighted_text = form_data.get("subchat_highlighted_text") or (body or {}).get("subchat_highlighted_text")
+        subchat_context_text = form_data.get("subchat_context_text") or (body or {}).get("subchat_context_text")
+        subchat_history = form_data.get("subchat_history") or (body or {}).get("subchat_history")
+        
+        # Force sub-chats into the ephemeral sandbox
+        if is_subchat:
+            incognito = True
         plan_mode = str(form_data.get("plan_mode") or (body or {}).get("plan_mode") or "").lower() == "true"
         chat_mode = str(form_data.get("mode", "")).lower()  # 'chat' or 'agent'
         # Workspace: confine the agent's file/shell tools to this folder.
@@ -970,6 +982,20 @@ def setup_chat_routes(
             last_user_message=message,
         )
         allow_tool_preprocessing = not pre_context_tool_policy.block_all_tool_calls
+
+        # Hydrate subchat history and inject context
+        if is_subchat:
+            if subchat_history:
+                try:
+                    parsed_history = json.loads(subchat_history)
+                    sess.history = [
+                        ChatMessage(role=m.get("role", "user"), content=m.get("content", ""))
+                        for m in parsed_history
+                    ]
+                except Exception as e:
+                    logger.warning(f"Failed to parse subchat_history: {e}")
+            elif subchat_highlighted_text:
+                message = f"Selected text: \"{subchat_highlighted_text}\"\n\n{message}"
 
         # Build shared context (stream path uses enhanced_message for context preface)
         ctx = await build_chat_context(
@@ -1641,6 +1667,26 @@ def setup_chat_routes(
                                     owner=_user,
                                     allow_background_extraction=not tool_policy.block_all_tool_calls,
                                 )
+                                if is_subchat and subchat_id and subchat_parent_msg_id:
+                                    try:
+                                        _sub_db = SessionLocal()
+                                        _parent_msg = _sub_db.query(ChatMessage).filter(ChatMessage.id == subchat_parent_msg_id).first()
+                                        if _parent_msg:
+                                            _meta = json.loads(_parent_msg.meta_data) if _parent_msg.meta_data else {}
+                                            if "subchats" not in _meta:
+                                                _meta["subchats"] = {}
+                                            if subchat_id not in _meta["subchats"]:
+                                                _meta["subchats"][subchat_id] = {"trigger_text": subchat_highlighted_text, "history": []}
+                                            _meta["subchats"][subchat_id]["history"].extend([
+                                                {"role": "user", "content": message},
+                                                {"role": "assistant", "content": full_response}
+                                            ])
+                                            _parent_msg.meta_data = json.dumps(_meta)
+                                            _sub_db.commit()
+                                    except Exception as _e:
+                                        logger.exception("Failed to save subchat history")
+                                    finally:
+                                        _sub_db.close()
                             _stream_set(session, status="done")
                             yield chunk
                 except (asyncio.CancelledError, GeneratorExit):
@@ -1806,6 +1852,26 @@ def setup_chat_routes(
                                     extract_skills=user_requested_agent,
                                     allow_background_extraction=not tool_policy.block_all_tool_calls,
                                 )
+                                if is_subchat and subchat_id and subchat_parent_msg_id:
+                                    try:
+                                        _sub_db = SessionLocal()
+                                        _parent_msg = _sub_db.query(ChatMessage).filter(ChatMessage.id == subchat_parent_msg_id).first()
+                                        if _parent_msg:
+                                            _meta = json.loads(_parent_msg.meta_data) if _parent_msg.meta_data else {}
+                                            if "subchats" not in _meta:
+                                                _meta["subchats"] = {}
+                                            if subchat_id not in _meta["subchats"]:
+                                                _meta["subchats"][subchat_id] = {"trigger_text": subchat_highlighted_text, "history": []}
+                                            _meta["subchats"][subchat_id]["history"].extend([
+                                                {"role": "user", "content": message},
+                                                {"role": "assistant", "content": _response_to_save}
+                                            ])
+                                            _parent_msg.meta_data = json.dumps(_meta)
+                                            _sub_db.commit()
+                                    except Exception as _e:
+                                        logger.exception("Failed to save subchat history")
+                                    finally:
+                                        _sub_db.close()
                             _stream_set(session, status="done")
                             yield chunk
                 except (asyncio.CancelledError, GeneratorExit):

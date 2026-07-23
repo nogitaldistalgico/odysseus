@@ -13,6 +13,14 @@ class ChatRequest(BaseModel):
     time_filter: Optional[str] = Field(default=None, description="Time filter for search")
     preset_id: Optional[str] = Field(default=None, description="Preset identifier")
     
+    # Sub-chat fields
+    is_subchat: Optional[bool] = Field(default=False, description="Whether this request is an ephemeral sub-chat")
+    subchat_id: Optional[str] = Field(default=None, description="Unique ID for this sub-chat thread")
+    subchat_parent_msg_id: Optional[str] = Field(default=None, description="Database ID of the parent message")
+    subchat_highlighted_text: Optional[str] = Field(default=None, description="The highlighted text that triggered the sub-chat")
+    subchat_context_text: Optional[str] = Field(default=None, description="Surrounding text context from the parent message")
+    subchat_history: Optional[str] = Field(default=None, description="Stringified JSON array of the sub-chat history")
+    
     @field_validator('message')
     @classmethod
     def clean_message(cls, v):
