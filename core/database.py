@@ -383,6 +383,35 @@ class GalleryImage(TimestampMixin, Base):
     )
 
 
+class StudioMedia(TimestampMixin, Base):
+    """Stores metadata for generated photo and video media via the Studio."""
+    __tablename__ = "studio_media"
+
+    id         = Column(String, primary_key=True, index=True)
+    filename   = Column(String, nullable=False, unique=True)
+    media_type = Column(String, nullable=False, default="photo")  # "photo" or "video"
+    prompt     = Column(Text, nullable=False, default="")
+    model      = Column(String, nullable=True)
+    owner      = Column(String, nullable=True, index=True)
+    is_active  = Column(Boolean, default=True)
+    favorite   = Column(Boolean, default=False)
+    
+    # Video specific: job tracking
+    job_id     = Column(String, nullable=True, index=True)
+    job_status = Column(String, nullable=True, default="completed")  # "pending", "completed", "failed"
+
+    # File attributes
+    width      = Column(Integer, nullable=True)
+    height     = Column(Integer, nullable=True)
+    file_size  = Column(Integer, nullable=True)  # bytes
+
+    __table_args__ = (
+        Index('ix_studio_media_active', 'is_active', 'created_at'),
+        Index('ix_studio_media_owner', 'owner'),
+    )
+
+
+
 class EmailAccount(TimestampMixin, Base):
     """A configured IMAP/SMTP account. Supports multiple accounts per user —
     exactly one row per owner has is_default=True.

@@ -755,6 +755,9 @@ app.include_router(setup_signature_routes())
 from routes.gallery.gallery_routes import setup_gallery_routes
 app.include_router(setup_gallery_routes())
 
+from routes.studio.studio_routes import router as studio_router
+app.include_router(studio_router)
+
 # Persisted image-editor drafts (server-backed projects)
 from routes.editor_draft_routes import setup_editor_draft_routes
 app.include_router(setup_editor_draft_routes())
