@@ -124,8 +124,12 @@ export function initFitnessModule(appElements, uiModule, sessionModule, chatModu
     dismiss();
     
     // Create a new session first so we don't pollute the current chat
-    const newSessionBtn = document.querySelector('.action-new-session');
-    if (newSessionBtn) newSessionBtn.click();
+    if (sessionModule && sessionModule.selectSession) {
+      await sessionModule.selectSession(null);
+    } else {
+      const newSessionBtn = document.getElementById('sidebar-new-chat-btn');
+      if (newSessionBtn) newSessionBtn.click();
+    }
     
     // Flag the next turn as fitness coach mode
     window.__isFitnessCoachNextTurn = true;
@@ -134,9 +138,9 @@ export function initFitnessModule(appElements, uiModule, sessionModule, chatModu
     setTimeout(() => {
       const chatInput = el('message');
       if (chatInput) {
-        chatInput.value = 'Hallo Fitness Coach! Wie sehen meine aktuellen Werte aus?';
+        chatInput.value = 'Hallo Fitness Coach!';
         chatInput.focus();
       }
-    }, 150);
+    }, 250);
   });
 }

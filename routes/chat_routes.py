@@ -650,6 +650,20 @@ def setup_chat_routes(
             allow_tool_preprocessing=allow_tool_preprocessing,
         )
 
+        is_fitness_coach = str(form_data.get("is_fitness_coach") or (body or {}).get("is_fitness_coach") or "").lower() == "true"
+        if is_fitness_coach:
+            coach_prompt = """You are a world-class Fitness Coach. You have file I/O tools to read and write to the user's local fitness data directory.
+The following files are available in this directory:
+- messwerte_log.md: Contains the user's vital metrics and Apple Watch data for the last 14 days. Read this to analyze recent trends.
+- temporaere_notizen.md: Contains temporary user context like injuries, bad sleep, or external factors. 
+- ziele.md: Long-term fitness goals.
+- wochenplan.md / trainingsplan.md: The user's current workout routines.
+- fitness_metrics.json: The current dashboard metrics and Condition Score.
+
+Your role is to analyze this data holistically to provide expert training advice, evaluate the user's condition, and answer any fitness-related questions. When evaluating the user's physical state, always consider both the hard vitals (messwerte_log) and the soft factors (temporaere_notizen).
+Answer in German by default as the user prefers German."""
+            ctx.messages.insert(0, {"role": "system", "content": coach_prompt})
+
         # Research injection
         research_blocked_by_policy = (
             tool_policy.blocks("trigger_research")
@@ -1029,6 +1043,19 @@ def setup_chat_routes(
             agent_mode=(chat_mode == "agent"),
             allow_tool_preprocessing=allow_tool_preprocessing,
         )
+
+        if is_fitness_coach:
+            coach_prompt = """You are a world-class Fitness Coach. You have file I/O tools to read and write to the user's local fitness data directory.
+The following files are available in this directory:
+- messwerte_log.md: Contains the user's vital metrics and Apple Watch data for the last 14 days. Read this to analyze recent trends.
+- temporaere_notizen.md: Contains temporary user context like injuries, bad sleep, or external factors. 
+- ziele.md: Long-term fitness goals.
+- wochenplan.md / trainingsplan.md: The user's current workout routines.
+- fitness_metrics.json: The current dashboard metrics and Condition Score.
+
+Your role is to analyze this data holistically to provide expert training advice, evaluate the user's condition, and answer any fitness-related questions. When evaluating the user's physical state, always consider both the hard vitals (messwerte_log) and the soft factors (temporaere_notizen).
+Answer in German by default as the user prefers German."""
+            ctx.messages.insert(0, {"role": "system", "content": coach_prompt})
 
         _research_flags = {"do": do_research}  # Mutable container for generator scope
 
