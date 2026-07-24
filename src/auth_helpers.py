@@ -137,6 +137,38 @@ def require_privilege(request: Request, key: str) -> str:
     return user
 
 
+def require_privilege_api_aware(request: Request, key: str) -> str:
+    """Allow both browser sessions and API tokens, but enforce privilege.
+    Used for endpoints like Media Studio and Research that the iOS app accesses."""
+    if _is_api_token_request(request):
+        owner = getattr(request.state, "api_token_owner", None)
+        if not owner:
+            raise HTTPException(403, "API token has no owner")
+        user = owner
+    else:
+        user = require_user(request)
+
+    if not user:
+        return user
+        
+    auth_mgr = getattr(request.app.state, "auth_manager", None)
+    if auth_mgr is None:
+        return user
+        
+    try:
+        privs = auth_mgr.get_privileges(user) or {}
+    except Exception:
+        return user
+        
+    if not isinstance(privs, dict):
+        privs = {}
+        
+    if not privs.get(key, True):
+        raise HTTPException(403, f"Your account is not allowed to {key.replace('_', ' ')}.")
+        
+    return user
+
+
 def owner_filter(query, model_cls, user: str, *, include_shared: bool = True):
     """Filter `query` so only rows owned by `user` (and optionally null-owner
     'shared' rows) come through. No-op when `user` is empty (single-user

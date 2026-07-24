@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from core.middleware import INTERNAL_TOOL_USER
 from src.endpoint_resolver import resolve_endpoint
-from src.auth_helpers import _auth_disabled, get_current_user
+from src.auth_helpers import _auth_disabled, get_current_user, effective_user
 from core.auth import RESERVED_USERNAMES
 from src.constants import DEEP_RESEARCH_DIR
 
@@ -214,7 +214,7 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
         data isn't owner-scoped in the on-disk JSON yet, so we at least
         block anonymous access. Multi-tenant deploys should additionally
         verify the session belongs to this user."""
-        user = get_current_user(request)
+        user = effective_user(request)
         if not user:
             if _auth_disabled():
                 return ""
@@ -492,8 +492,8 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
     @router.post("/api/research/start")
     async def research_start(body: ResearchStartRequest, request: Request):
         """Launch a research job from the dedicated panel."""
-        from src.auth_helpers import require_privilege
-        user = require_privilege(request, "can_use_research")
+        from src.auth_helpers import require_privilege_api_aware
+        user = require_privilege_api_aware(request, "can_use_research")
         if user == INTERNAL_TOOL_USER:
             tool_owner = (request.headers.get("X-Odysseus-Owner") or "").strip()
             if tool_owner and tool_owner not in RESERVED_USERNAMES:

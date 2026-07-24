@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from core.database import SessionLocal, CrewMember, ScheduledTask
-from src.auth_helpers import get_current_user
+from src.auth_helpers import get_current_user, effective_user
 from core.auth import RESERVED_USERNAMES
 from src.task_scheduler import compute_next_run
 
@@ -81,7 +81,7 @@ def setup_assistant_routes(task_scheduler) -> APIRouter:
     router = APIRouter(prefix="/api/assistant", tags=["assistant"])
 
     def _owner(request: Request) -> str:
-        owner = get_current_user(request)
+        owner = effective_user(request)
         if not owner:
             raise HTTPException(status_code=401, detail="Not authenticated")
         return owner
