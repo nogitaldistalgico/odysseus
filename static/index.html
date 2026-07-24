@@ -249,7 +249,7 @@
     })();
   </script>
   <link rel="stylesheet" href="/static/style.css?v=20260723tasksbulkfeedback1">
-  <link rel="modulepreload" href="/static/app.js?v=fitness2">
+  <link rel="modulepreload" href="/static/app.js?v=fitness3">
   <link rel="modulepreload" href="/static/js/chat.js?v=20260722ctxheader4">
   <link rel="modulepreload" href="/static/js/ui.js">
   <link rel="modulepreload" href="/static/js/sessions.js?v=20260722ctxheader4">
@@ -1421,7 +1421,15 @@
             <div id="fitness-movement-text" style="font-size: 13px; opacity: 0.8;">Loading...</div>
           </div>
         </div>
-        <div style="display: flex; justify-content: flex-end;">
+        <div style="display: flex; justify-content: flex-end; gap: 10px;">
+          <button id="fitness-note-btn" style="padding: 10px 16px; background: var(--bg-tertiary); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 6px;" title="Notiz hinzufügen">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+            Notiz
+          </button>
+          <button id="fitness-calc-btn" style="padding: 10px 16px; background: var(--bg-tertiary); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 6px;" title="Condition-Score neu berechnen">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+            Score berechnen
+          </button>
           <button id="fitness-chat-btn" style="padding: 10px 16px; background: var(--fg); color: var(--bg); border: none; border-radius: 6px; font-weight: bold; cursor: pointer;">Chat with Coach</button>
         </div>
       </div>
@@ -2572,7 +2580,7 @@
 <script type="module" src="/static/js/censor.js"></script>
 <script type="module" src="/static/js/settings.js?v=20260723compareicon1"></script>
 <script type="module" src="/static/js/assistant.js"></script>
-<script type="module" src="/static/app.js?v=fitness2"></script>  <!-- app.js must be LAST -->
+<script type="module" src="/static/app.js?v=fitness3"></script>  <!-- app.js must be LAST -->
   <script type="module" src="/static/js/init.js?v=20260715freshroot3"></script>
 <script type="module" src="/static/js/a11y.js"></script>
 <script nonce="{{CSP_NONCE}}">if('serviceWorker' in navigator){navigator.serviceWorker.register('/static/sw.js').catch(()=>{});}</script>

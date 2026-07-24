@@ -54,6 +54,72 @@ export function initFitnessModule(appElements, uiModule, sessionModule, chatModu
     fetchDashboard();
   });
 
+  const noteBtn = el('fitness-note-btn');
+  if (noteBtn) {
+    noteBtn.addEventListener('click', async () => {
+      const noteText = prompt("Temporäre Notiz (z.B. gestern feiern, harter Umzug):");
+      if (!noteText || !noteText.trim()) return;
+      noteBtn.disabled = true;
+      try {
+        const r = await fetch(`${API_BASE}/api/fitness_coach/note`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ note: noteText.trim() })
+        });
+        if (!r.ok) {
+          alert('Fehler beim Speichern der Notiz!');
+        }
+      } catch(e) {
+        console.error('Note add error', e);
+        alert('Fehler beim Speichern der Notiz!');
+      }
+      noteBtn.disabled = false;
+    });
+  }
+
+  const calcBtn = el('fitness-calc-btn');
+  if (calcBtn) {
+    calcBtn.addEventListener('click', async () => {
+      const originalIcon = calcBtn.innerHTML;
+      calcBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="anim-spin" style="animation: spin 1s linear infinite;"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 10 10"/></svg> Berechne...';
+      calcBtn.disabled = true;
+
+      const promptText = "Bitte lies meine neusten Vitalwerte aus dem Log und meine temporären Notizen, berechne meinen heutigen Condition-Score (0-100) und schreibe den neuen Score in den condition-Block von fitness_metrics.json. Schreibe in das Feld 'text' des condition-Blocks ein kurzes Label (max 2 Wörter, z.B. 'Gut', 'Eingeschränkt'). Schreibe ZUSÄTZLICH eine kurze Erklärung (max 1-2 Sätze inkl. kleinem Tipp) in das Feld 'tooltip' innerhalb des condition-Blocks, warum du diesen Wert gewählt hast. (WICHTIG: Antworte SOFORT mit dem Tool Call und gib keinerlei Erklärungen oder Gedanken vorher aus, um Token zu sparen. Du musst keine Romane schreiben, komme direkt zum Ergebnis.)";
+      
+      const fd = new FormData();
+      fd.append('message', promptText);
+      const currentSessionId = sessionModule && sessionModule.getCurrentSessionId ? sessionModule.getCurrentSessionId() : '';
+      if (currentSessionId) {
+          fd.append('session', currentSessionId);
+      }
+      fd.append('incognito', 'true');
+      fd.append('mode', 'agent');
+      fd.append('is_subchat', 'true');
+      fd.append('is_fitness_coach', 'true'); // Wichtig: Damit das Backend die Tools bereitstellt
+      
+      try {
+        const res = await fetch(`${API_BASE}/api/chat_stream`, {
+          method: 'POST',
+          body: fd
+        });
+        if (res.body) {
+            const reader = res.body.getReader();
+            while(true) {
+                const {done} = await reader.read();
+                if (done) break;
+            }
+        }
+        // Refresh dashboard after calculation
+        fetchDashboard();
+      } catch(e) {
+        console.error("Fehler beim Background Chat:", e);
+      }
+      
+      calcBtn.innerHTML = originalIcon;
+      calcBtn.disabled = false;
+    });
+  }
+
   chatBtn.addEventListener('click', async () => {
     dismiss();
     
