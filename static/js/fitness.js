@@ -123,14 +123,20 @@ export function initFitnessModule(appElements, uiModule, sessionModule, chatModu
   chatBtn.addEventListener('click', async () => {
     dismiss();
     
+    // Create a new session first so we don't pollute the current chat
+    const newSessionBtn = document.querySelector('.action-new-session');
+    if (newSessionBtn) newSessionBtn.click();
+    
     // Flag the next turn as fitness coach mode
     window.__isFitnessCoachNextTurn = true;
     
-    // Auto-fill a message for the coach
-    const chatInput = el('message');
-    if (chatInput) {
-      chatInput.value = 'Hallo Fitness Coach! Wie sehen meine aktuellen Werte aus?';
-      chatInput.focus();
-    }
+    // Auto-fill a message for the coach after a brief delay to let the new session initialize
+    setTimeout(() => {
+      const chatInput = el('message');
+      if (chatInput) {
+        chatInput.value = 'Hallo Fitness Coach! Wie sehen meine aktuellen Werte aus?';
+        chatInput.focus();
+      }
+    }, 150);
   });
 }
