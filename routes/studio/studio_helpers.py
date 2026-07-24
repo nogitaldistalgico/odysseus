@@ -5,10 +5,42 @@ from typing import Dict, Any, Optional
 from pydantic import BaseModel
 
 from core.database import StudioMedia, ModelEndpoint
-from src.auth_helpers import _auth_disabled
+from src.auth_helpers import _auth_disabled, require_user
 from src.settings import get_user_setting, load_settings
+from fastapi import Request, HTTPException
 
 logger = logging.getLogger(__name__)
+
+def require_studio_privilege(request: Request) -> str:
+    """Allow both browser sessions and API tokens, but enforce privilege."""
+    if getattr(request.state, "api_token", False):
+        owner = getattr(request.state, "api_token_owner", None)
+        if not owner:
+            raise HTTPException(403, "API token has no owner")
+        user = owner
+    else:
+        user = require_user(request)
+
+    if not user:
+        return user
+        
+    auth_mgr = getattr(request.app.state, "auth_manager", None)
+    if auth_mgr is None:
+        return user
+        
+    try:
+        privs = auth_mgr.get_privileges(user) or {}
+    except Exception:
+        return user
+        
+    if not isinstance(privs, dict):
+        privs = {}
+        
+    if not privs.get("can_generate_images", True):
+        raise HTTPException(403, "Your account is not allowed to generate images.")
+        
+    return user
+
 
 def _owner_filter(q, user, model_cls=StudioMedia):
     """Apply owner filtering to a studio query."""

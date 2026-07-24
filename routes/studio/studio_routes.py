@@ -12,10 +12,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from core.database import SessionLocal, StudioMedia
-from src.auth_helpers import get_current_user, require_privilege, effective_user
+from src.auth_helpers import get_current_user, effective_user
 from src.constants import STUDIO_MEDIA_DIR, UPLOAD_DIR
 from src.settings import load_settings, get_user_setting
-from routes.studio.studio_helpers import _owner_filter, _media_to_dict, get_openrouter_api_key
+from routes.studio.studio_helpers import _owner_filter, _media_to_dict, get_openrouter_api_key, require_studio_privilege
 import mimetypes
 
 os.makedirs(STUDIO_MEDIA_DIR, exist_ok=True)
@@ -141,7 +141,7 @@ async def get_studio_media(request: Request, filename: str):
 
 @router.delete("/api/studio/{media_id}")
 async def delete_studio_media(request: Request, media_id: str):
-    user = require_privilege(request, "can_generate_images")
+    user = require_studio_privilege(request)
     db = SessionLocal()
     try:
         m = db.query(StudioMedia).filter(StudioMedia.id == media_id).first()
@@ -155,7 +155,7 @@ async def delete_studio_media(request: Request, media_id: str):
 
 @router.post("/api/studio/generate/photo")
 async def generate_photo(request: Request, req: PhotoGenRequest):
-    user = require_privilege(request, "can_generate_images")
+    user = require_studio_privilege(request)
     db = SessionLocal()
     try:
         api_key = get_openrouter_api_key(db)
@@ -246,7 +246,7 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
 
 @router.post("/api/studio/generate/video")
 async def generate_video(request: Request, req: VideoGenRequest):
-    user = require_privilege(request, "can_generate_images")
+    user = require_studio_privilege(request)
     db = SessionLocal()
     try:
         api_key = get_openrouter_api_key(db)
@@ -342,7 +342,7 @@ async def generate_video(request: Request, req: VideoGenRequest):
 
 @router.get("/api/studio/jobs/{media_id}")
 async def check_video_job(request: Request, media_id: str):
-    user = require_privilege(request, "can_generate_images")
+    user = require_studio_privilege(request)
     db = SessionLocal()
     try:
         m = db.query(StudioMedia).filter(StudioMedia.id == media_id).first()
