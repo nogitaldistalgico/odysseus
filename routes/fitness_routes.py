@@ -1,6 +1,6 @@
 import os
 import json
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from src.auth_helpers import effective_user
@@ -174,5 +174,43 @@ def setup_fitness_routes() -> APIRouter:
             return JSONResponse(content={"status": "success"})
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post("/api/fitness_coach/recalculate")
+    async def trigger_recalculation(request: Request, background_tasks: BackgroundTasks):
+        user = effective_user(request)
+        if not user:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+            
+        async def _run_ai_recalculation():
+            import httpx
+            from src.auth_helpers import _is_api_token_request
+            
+            prompt_text = "Bitte lies meine neusten Vitalwerte aus dem Log und meine temporären Notizen, berechne meinen heutigen Condition-Score (0-100) und schreibe den neuen Score in den condition-Block von fitness_metrics.json. Schreibe in das Feld 'text' des condition-Blocks ein kurzes Label (max 2 Wörter, z.B. 'Gut', 'Eingeschränkt'). Schreibe ZUSÄTZLICH eine kurze Erklärung (max 1-2 Sätze inkl. kleinem Tipp) in das Feld 'tooltip' innerhalb des condition-Blocks, warum du diesen Wert gewählt hast. (WICHTIG: Antworte SOFORT mit dem Tool Call und gib keinerlei Erklärungen oder Gedanken vorher aus, um Token zu sparen. Du musst keine Romane schreiben, komme direkt zum Ergebnis.)"
+            
+            headers = {}
+            cookies = {}
+            if _is_api_token_request(request):
+                auth = request.headers.get("Authorization")
+                if auth:
+                    headers["Authorization"] = auth
+            else:
+                cookies = request.cookies
+                
+            try:
+                transport = httpx.ASGITransport(app=request.app)
+                async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                    data = {
+                        "message": prompt_text,
+                        "incognito": True,
+                        "mode": "agent",
+                        "is_subchat": True,
+                        "is_fitness_coach": "true"
+                    }
+                    await client.post("/api/chat", json=data, headers=headers, cookies=cookies, timeout=60.0)
+            except Exception as e:
+                print(f"Error in background fitness recalculation: {e}")
+                
+        background_tasks.add_task(_run_ai_recalculation)
+        return JSONResponse(content={"status": "calculating"})
 
     return router

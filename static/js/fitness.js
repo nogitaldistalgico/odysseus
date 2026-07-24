@@ -84,30 +84,30 @@ export function initFitnessModule(appElements, uiModule, sessionModule, chatModu
       calcBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="anim-spin" style="animation: spin 1s linear infinite;"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 10 10"/></svg> Berechne...';
       calcBtn.disabled = true;
 
-      const promptText = "Bitte lies meine neusten Vitalwerte aus dem Log und meine temporären Notizen, berechne meinen heutigen Condition-Score (0-100) und schreibe den neuen Score in den condition-Block von fitness_metrics.json. Schreibe in das Feld 'text' des condition-Blocks ein kurzes Label (max 2 Wörter, z.B. 'Gut', 'Eingeschränkt'). Schreibe ZUSÄTZLICH eine kurze Erklärung (max 1-2 Sätze inkl. kleinem Tipp) in das Feld 'tooltip' innerhalb des condition-Blocks, warum du diesen Wert gewählt hast. (WICHTIG: Antworte SOFORT mit dem Tool Call und gib keinerlei Erklärungen oder Gedanken vorher aus, um Token zu sparen. Du musst keine Romane schreiben, komme direkt zum Ergebnis.)";
-      
-      const fd = new FormData();
-      fd.append('message', promptText);
-      const currentSessionId = sessionModule && sessionModule.getCurrentSessionId ? sessionModule.getCurrentSessionId() : '';
-      if (currentSessionId) {
-          fd.append('session', currentSessionId);
-      }
-      fd.append('incognito', 'true');
-      fd.append('mode', 'agent');
-      fd.append('is_subchat', 'true');
-      fd.append('is_fitness_coach', 'true'); // Wichtig: Damit das Backend die Tools bereitstellt
-      
       try {
-        const res = await fetch(`${API_BASE}/api/chat_stream`, {
-          method: 'POST',
-          body: fd
+        const res = await fetch(`${API_BASE}/api/fitness_coach/recalculate`, {
+          method: 'POST'
         });
-        if (res.body) {
-            const reader = res.body.getReader();
-            while(true) {
-                const {done} = await reader.read();
-                if (done) break;
-            }
+        
+        if (res.ok) {
+            // Success, wait a bit and then reload the dashboard to show new values
+            setTimeout(async () => {
+                const dashRes = await fetch(`${API_BASE}/api/fitness_coach/dashboard`);
+                if (dashRes.ok) {
+                    const data = await dashRes.json();
+                    if (el('fitness-recovery-score')) {
+                        el('fitness-recovery-score').textContent = data.recovery.score;
+                        el('fitness-recovery-text').textContent = data.recovery.text;
+                        el('fitness-condition-score').textContent = data.condition.score;
+                        el('fitness-condition-text').textContent = data.condition.text;
+                        el('fitness-movement-score').textContent = `${data.movement.current} / ${data.movement.goal} ${data.movement.unit || 'kcal'}`;
+                        el('fitness-movement-text').textContent = data.movement.text;
+                    }
+                }
+                calcBtn.innerHTML = originalIcon;
+                calcBtn.disabled = false;
+            }, 8000); // Wait 8 seconds for AI to finish in background
+            return;
         }
         // Refresh dashboard after calculation
         fetchDashboard();
