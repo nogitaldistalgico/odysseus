@@ -641,6 +641,10 @@ async def activity_heartbeat():
     return {"ok": True}
 
 
+# Fitness Coach
+from routes.fitness_routes import setup_fitness_routes
+app.include_router(setup_fitness_routes())
+
 # Uploads
 from routes.upload_routes import setup_upload_routes
 upload_router, upload_cleanup_func = setup_upload_routes(upload_handler)

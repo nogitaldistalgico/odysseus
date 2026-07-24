@@ -744,12 +744,22 @@ def setup_chat_routes(
         # Force sub-chats into the ephemeral sandbox
         if is_subchat:
             incognito = True
+        # Fitness Coach property extraction
+        is_fitness_coach = str(form_data.get("is_fitness_coach") or (body or {}).get("is_fitness_coach") or "").lower() == "true"
+        
         plan_mode = str(form_data.get("plan_mode") or (body or {}).get("plan_mode") or "").lower() == "true"
         chat_mode = str(form_data.get("mode", "")).lower()  # 'chat' or 'agent'
         # Workspace: confine the agent's file/shell tools to this folder.
         workspace, workspace_rejected = _resolve_request_workspace(
             request, form_data.get("workspace")
         )
+        
+        # Override workspace for fitness coach
+        if is_fitness_coach:
+            from core.constants import DATA_DIR
+            workspace = os.path.join(DATA_DIR, "users", effective_user(request) or "default", "fitness_data")
+            chat_mode = "agent"
+            incognito = False
         # Plan mode is a modifier on agent mode — it only makes sense with tools.
         if plan_mode:
             chat_mode = "agent"

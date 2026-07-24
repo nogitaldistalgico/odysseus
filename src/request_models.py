@@ -21,6 +21,9 @@ class ChatRequest(BaseModel):
     subchat_context_text: Optional[str] = Field(default=None, description="Surrounding text context from the parent message")
     subchat_history: Optional[str] = Field(default=None, description="Stringified JSON array of the sub-chat history")
     
+    # Fitness Coach
+    is_fitness_coach: Optional[bool] = Field(default=False, description="Whether this request should run in the fitness coach sandbox")
+    
     @field_validator('message')
     @classmethod
     def clean_message(cls, v):
