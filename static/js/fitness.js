@@ -61,7 +61,7 @@ export function initFitnessModule(appElements, uiModule, sessionModule, chatModu
     window.__isFitnessCoachNextTurn = true;
     
     // Auto-fill a message for the coach
-    const chatInput = el('chat-input');
+    const chatInput = el('message');
     if (chatInput) {
       chatInput.value = 'Hallo Fitness Coach! Wie sehen meine aktuellen Werte aus?';
       chatInput.focus();
