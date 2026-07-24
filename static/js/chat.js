@@ -1714,6 +1714,11 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
       if (presetsModule.getSelectedPreset()) {
         fd.append('preset_id', presetsModule.getSelectedPreset());
       }
+      
+      if (window.__isFitnessCoachNextTurn) {
+        fd.append('is_fitness_coach', 'true');
+        // Let it persist for this frontend session so the whole conversation is locked.
+      }
 
 
       const abortCtrl = new AbortController();

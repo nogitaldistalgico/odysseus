@@ -860,6 +860,14 @@
           </svg>
           <span class="grow">Brain</span>
         </div>
+        <div class="list-item" id="tool-fitness-btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+            style="flex-shrink:0;opacity:0.5;">
+            <path d="M20.42 4.58a5.4 5.4 0 0 0-7.65 0l-.77.78-.77-.78a5.4 5.4 0 0 0-7.65 0C1.46 6.7 1.33 10.28 4 13l8 8 8-8c2.67-2.72 2.54-6.3.42-8.42z"/>
+          </svg>
+          <span class="grow">Fitness Coach</span>
+        </div>
         <div class="list-item" id="tool-calendar-btn">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
@@ -1383,6 +1391,40 @@
         <button class="close-btn" id="close-cookbook-modal" aria-label="Close cookbook">✖</button>
       </div>
       <div class="modal-body cookbook-body"></div>
+    </div>
+  </div>
+
+  <!-- Fitness Coach Modal -->
+  <div id="fitness-modal" class="modal hidden">
+    <div class="modal-content" role="dialog" aria-label="Fitness Coach Dashboard" style="width: min(800px, 90vw);">
+      <div class="modal-header">
+        <h4 style="margin:0;margin-right:auto">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px;margin-right:6px"><path d="M20.42 4.58a5.4 5.4 0 0 0-7.65 0l-.77.78-.77-.78a5.4 5.4 0 0 0-7.65 0C1.46 6.7 1.33 10.28 4 13l8 8 8-8c2.67-2.72 2.54-6.3.42-8.42z"/></svg>Fitness Coach
+        </h4>
+        <button class="close-btn" id="close-fitness-modal" aria-label="Close fitness dashboard">✖</button>
+      </div>
+      <div class="modal-body" style="display: flex; flex-direction: column; gap: 20px;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+          <div style="background: var(--bg-hover, #f0f0f0); padding: 15px; border-radius: 8px;">
+            <div style="font-size: 12px; text-transform: uppercase; font-weight: bold; opacity: 0.7;">Recovery</div>
+            <div id="fitness-recovery-score" style="font-size: 32px; font-weight: 800; margin: 5px 0;">--</div>
+            <div id="fitness-recovery-text" style="font-size: 13px; opacity: 0.8;">Loading...</div>
+          </div>
+          <div style="background: var(--bg-hover, #f0f0f0); padding: 15px; border-radius: 8px;">
+            <div style="font-size: 12px; text-transform: uppercase; font-weight: bold; opacity: 0.7;">Condition</div>
+            <div id="fitness-condition-score" style="font-size: 32px; font-weight: 800; margin: 5px 0;">--</div>
+            <div id="fitness-condition-text" style="font-size: 13px; opacity: 0.8;">Loading...</div>
+          </div>
+          <div style="background: var(--bg-hover, #f0f0f0); padding: 15px; border-radius: 8px;">
+            <div style="font-size: 12px; text-transform: uppercase; font-weight: bold; opacity: 0.7;">Movement</div>
+            <div id="fitness-movement-score" style="font-size: 32px; font-weight: 800; margin: 5px 0;">--</div>
+            <div id="fitness-movement-text" style="font-size: 13px; opacity: 0.8;">Loading...</div>
+          </div>
+        </div>
+        <div style="display: flex; justify-content: flex-end;">
+          <button id="fitness-chat-btn" style="padding: 10px 16px; background: var(--fg); color: var(--bg); border: none; border-radius: 6px; font-weight: bold; cursor: pointer;">Chat with Coach</button>
+        </div>
+      </div>
     </div>
   </div>
 
