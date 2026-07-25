@@ -44,6 +44,15 @@ def setup_fitness_routes() -> APIRouter:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            # Merge with defaults to prevent JS crashes
+            defaults = get_default_metrics()
+            for key in defaults:
+                if key not in data or not isinstance(data[key], dict):
+                    data[key] = defaults[key]
+                else:
+                    for subkey in defaults[key]:
+                        if subkey not in data[key]:
+                            data[key][subkey] = defaults[key][subkey]
             return JSONResponse(content=data)
         except Exception:
             return JSONResponse(content=get_default_metrics())
@@ -183,30 +192,68 @@ def setup_fitness_routes() -> APIRouter:
             
         async def _run_ai_recalculation():
             import httpx
-            from src.auth_helpers import _is_api_token_request
+            from src.endpoint_resolver import resolve_endpoint
+            from src.llm_core import llm_call_async
+            import re
             
-            prompt_text = "Bitte lies meine neusten Vitalwerte aus dem Log und meine temporären Notizen, berechne meinen heutigen Condition-Score (0-100) und schreibe den neuen Score in den condition-Block von fitness_metrics.json. Schreibe in das Feld 'text' des condition-Blocks ein kurzes Label (max 2 Wörter, z.B. 'Gut', 'Eingeschränkt'). Schreibe ZUSÄTZLICH eine kurze Erklärung (max 1-2 Sätze inkl. kleinem Tipp) in das Feld 'tooltip' innerhalb des condition-Blocks, warum du diesen Wert gewählt hast. (WICHTIG: Antworte SOFORT mit dem Tool Call und gib keinerlei Erklärungen oder Gedanken vorher aus, um Token zu sparen. Du musst keine Romane schreiben, komme direkt zum Ergebnis.)"
+            workspace = os.path.dirname(get_fitness_metrics_path(request))
+            def _read_file_safe(filename):
+                try:
+                    with open(os.path.join(workspace, filename), "r", encoding="utf-8") as f:
+                        return f.read()
+                except Exception:
+                    return ""
+                    
+            vital_log = _read_file_safe("messwerte_log.md")
+            notes = _read_file_safe("temporaere_notizen.md")
             
-            headers = {}
-            cookies = {}
-            if _is_api_token_request(request):
-                auth = request.headers.get("Authorization")
-                if auth:
-                    headers["Authorization"] = auth
-            else:
-                cookies = request.cookies
+            prompt_text = f"""Bitte berechne meinen heutigen Condition-Score (0-100) basierend auf meinen Daten.
+            
+Vitalwerte Log:
+{vital_log}
+
+Notizen:
+{notes}
+
+Antworte AUSSCHLIESSLICH mit einem validen JSON-Objekt in folgendem Format:
+{{"score": 85, "text": "Gut", "tooltip": "Gute Erholung, heute ist ein Training möglich."}}
+Gib keinen anderen Text, Markdown oder Erklärungen aus."""
+            
+            url, model, headers = resolve_endpoint("default", owner=user)
+            if not url or not model:
+                print("Error: No default endpoint configured for fitness coach")
+                return
                 
             try:
-                transport = httpx.ASGITransport(app=request.app)
-                async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-                    data = {
-                        "message": prompt_text,
-                        "incognito": "true",
-                        "mode": "agent",
-                        "is_subchat": "true",
-                        "is_fitness_coach": "true"
-                    }
-                    await client.post("/api/chat_stream", data=data, headers=headers, cookies=cookies, timeout=120.0)
+                response_text = await llm_call_async(url, model, messages=[{"role": "user", "content": prompt_text}], headers=headers)
+                
+                # Parse JSON safely
+                json_str = response_text.strip()
+                if "```json" in json_str:
+                    json_str = json_str.split("```json")[1].split("```")[0].strip()
+                elif "```" in json_str:
+                    json_str = json_str.split("```")[1].split("```")[0].strip()
+                
+                score_data = json.loads(json_str)
+                
+                metrics_path = get_fitness_metrics_path(request)
+                current_data = get_default_metrics()
+                if os.path.exists(metrics_path):
+                    try:
+                        with open(metrics_path, "r", encoding="utf-8") as f:
+                            current_data.update(json.load(f))
+                    except Exception:
+                        pass
+                
+                current_data["condition"] = {
+                    "score": score_data.get("score", 0),
+                    "text": score_data.get("text", "?"),
+                    "tooltip": score_data.get("tooltip", "")
+                }
+                
+                with open(metrics_path, "w", encoding="utf-8") as f:
+                    json.dump(current_data, f, indent=4)
+                    
             except Exception as e:
                 print(f"Error in background fitness recalculation: {e}")
                 
