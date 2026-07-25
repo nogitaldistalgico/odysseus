@@ -185,79 +185,102 @@ def setup_fitness_routes() -> APIRouter:
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post("/api/fitness_coach/recalculate")
-    async def trigger_recalculation(request: Request, background_tasks: BackgroundTasks):
+    async def trigger_recalculation(request: Request):
         user = effective_user(request)
         if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
             
-        async def _run_ai_recalculation():
-            import httpx
-            from src.endpoint_resolver import resolve_endpoint
-            from src.llm_core import llm_call_async
-            import re
-            
-            workspace = os.path.dirname(get_fitness_metrics_path(request))
-            def _read_file_safe(filename):
-                try:
-                    with open(os.path.join(workspace, filename), "r", encoding="utf-8") as f:
-                        return f.read()
-                except Exception:
-                    return ""
-                    
-            vital_log = _read_file_safe("messwerte_log.md")
-            notes = _read_file_safe("temporaere_notizen.md")
-            
-            prompt_text = f"""Bitte berechne meinen heutigen Condition-Score (0-100) basierend auf meinen Daten.
-            
+        import re
+        from core.database import SessionLocal, ModelEndpoint
+        from src.endpoint_resolver import (
+            resolve_endpoint,
+            resolve_endpoint_runtime,
+            build_chat_url,
+            build_headers,
+            _first_chat_model,
+            _endpoint_enabled_models,
+        )
+        from src.llm_core import llm_call_async
+        
+        workspace = os.path.dirname(get_fitness_metrics_path(request))
+        def _read_file_safe(filename):
+            try:
+                with open(os.path.join(workspace, filename), "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                return ""
+                
+        vital_log = _read_file_safe("messwerte_log.md")
+        notes = _read_file_safe("temporaere_notizen.md")
+        
+        prompt_text = f"""Bitte berechne meinen heutigen Condition-Score (0-100) basierend auf folgenden Daten.
+
 Vitalwerte Log:
 {vital_log}
 
 Notizen:
 {notes}
 
-Antworte AUSSCHLIESSLICH mit einem validen JSON-Objekt in folgendem Format:
+Antworte AUSSCHLIESSLICH mit einem validen JSON-Objekt im Format:
 {{"score": 85, "text": "Gut", "tooltip": "Gute Erholung, heute ist ein Training möglich."}}
-Gib keinen anderen Text, Markdown oder Erklärungen aus."""
-            
-            url, model, headers = resolve_endpoint("default", owner=user)
-            if not url or not model:
-                print("Error: No default endpoint configured for fitness coach")
-                return
-                
+Kein anderer Text!"""
+
+        url, model, headers = resolve_endpoint("default", owner=user)
+        if not url or not model:
+            # Fallback: Query first enabled ModelEndpoint from DB directly
+            db = SessionLocal()
             try:
-                response_text = await llm_call_async(url, model, messages=[{"role": "user", "content": prompt_text}], headers=headers)
-                
-                # Parse JSON safely
-                json_str = response_text.strip()
-                if "```json" in json_str:
-                    json_str = json_str.split("```json")[1].split("```")[0].strip()
-                elif "```" in json_str:
-                    json_str = json_str.split("```")[1].split("```")[0].strip()
-                
-                score_data = json.loads(json_str)
-                
-                metrics_path = get_fitness_metrics_path(request)
-                current_data = get_default_metrics()
-                if os.path.exists(metrics_path):
-                    try:
-                        with open(metrics_path, "r", encoding="utf-8") as f:
-                            current_data.update(json.load(f))
-                    except Exception:
-                        pass
-                
-                current_data["condition"] = {
-                    "score": score_data.get("score", 0),
-                    "text": score_data.get("text", "?"),
-                    "tooltip": score_data.get("tooltip", "")
-                }
-                
-                with open(metrics_path, "w", encoding="utf-8") as f:
-                    json.dump(current_data, f, indent=4)
-                    
+                q = db.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True)
+                if user:
+                    from src.auth_helpers import owner_filter
+                    q = owner_filter(q, ModelEndpoint, user)
+                ep = q.first()
+                if ep:
+                    base, api_key = resolve_endpoint_runtime(ep, owner=user)
+                    url = build_chat_url(base)
+                    headers = build_headers(api_key, base)
+                    model = _first_chat_model(_endpoint_enabled_models(ep))
             except Exception as e:
-                print(f"Error in background fitness recalculation: {e}")
+                print(f"Error querying fallback endpoint: {e}")
+            finally:
+                db.close()
                 
-        background_tasks.add_task(_run_ai_recalculation)
-        return JSONResponse(content={"status": "calculating"})
+        if not url or not model:
+            raise HTTPException(status_code=500, detail="Kein aktiver KI-Endpunkt konfiguriert")
+
+        try:
+            response_text = await llm_call_async(
+                url, model, messages=[{"role": "user", "content": prompt_text}], headers=headers
+            )
+            
+            # Robust JSON extraction via regex
+            match = re.search(r"\{.*\}", response_text, re.DOTALL)
+            if not match:
+                raise ValueError(f"Kein JSON in Antwort gefunden: {response_text}")
+                
+            score_data = json.loads(match.group(0))
+            
+            metrics_path = get_fitness_metrics_path(request)
+            current_data = get_default_metrics()
+            if os.path.exists(metrics_path):
+                try:
+                    with open(metrics_path, "r", encoding="utf-8") as f:
+                        current_data.update(json.load(f))
+                except Exception:
+                    pass
+            
+            current_data["condition"] = {
+                "score": int(score_data.get("score", 70)),
+                "text": str(score_data.get("text", "Normal")),
+                "tooltip": str(score_data.get("tooltip", ""))
+            }
+            
+            with open(metrics_path, "w", encoding="utf-8") as f:
+                json.dump(current_data, f, indent=4)
+                
+            return JSONResponse(content={"status": "success", "metrics": current_data})
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Fehler bei der Score-Berechnung: {str(e)}")
 
     return router

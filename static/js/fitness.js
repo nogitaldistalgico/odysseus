@@ -90,33 +90,30 @@ export function initFitnessModule(appElements, uiModule, sessionModule, chatModu
         });
         
         if (res.ok) {
-            // Success, wait a bit and then reload the dashboard to show new values
-            setTimeout(async () => {
-                const dashRes = await fetch(`${API_BASE}/api/fitness_coach/dashboard`);
-                if (dashRes.ok) {
-                    const data = await dashRes.json();
-                    if (el('fitness-recovery-score')) {
-                        el('fitness-recovery-score').textContent = data.recovery.score;
-                        el('fitness-recovery-text').textContent = data.recovery.text;
-                        el('fitness-condition-score').textContent = data.condition.score;
-                        el('fitness-condition-text').textContent = data.condition.text;
-                        el('fitness-movement-score').textContent = `${data.movement.current} / ${data.movement.goal} ${data.movement.unit || 'kcal'}`;
-                        el('fitness-movement-text').textContent = data.movement.text;
-                    }
-                }
-                calcBtn.innerHTML = originalIcon;
-                calcBtn.disabled = false;
-            }, 8000); // Wait 8 seconds for AI to finish in background
-            return;
+            const result = await res.json();
+            const data = result.metrics || result;
+            if (el('fitness-recovery-score') && data.recovery) {
+                el('fitness-recovery-score').textContent = data.recovery.score ?? '--';
+                el('fitness-recovery-text').textContent = data.recovery.text ?? '';
+            }
+            if (el('fitness-condition-score') && data.condition) {
+                el('fitness-condition-score').textContent = data.condition.score ?? '--';
+                el('fitness-condition-text').textContent = data.condition.text ?? '';
+            }
+            if (el('fitness-movement-score') && data.movement) {
+                el('fitness-movement-score').textContent = `${data.movement.current ?? 0} / ${data.movement.goal ?? 1000} ${data.movement.unit || 'kcal'}`;
+                el('fitness-movement-text').textContent = data.movement.text ?? '';
+            }
+        } else {
+            console.error("Recalculation error status:", res.status);
+            alert("Fehler bei der Berechnung");
         }
-        // Refresh dashboard after calculation
-        fetchDashboard();
       } catch(e) {
-        console.error("Fehler beim Background Chat:", e);
+        console.error("Fehler bei der Berechnung:", e);
+      } finally {
+        calcBtn.innerHTML = originalIcon;
+        calcBtn.disabled = false;
       }
-      
-      calcBtn.innerHTML = originalIcon;
-      calcBtn.disabled = false;
     });
   }
 
