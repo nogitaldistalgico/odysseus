@@ -300,21 +300,8 @@ def _require_auth(request: Request) -> str:
     unconfigured mode are only honoured if they're coming from
     localhost; everyone else gets 401.
     """
-    u = get_current_user(request)
-    if u:
-        return u
-    if _auth_disabled():
-        return ""
-    auth_mgr = getattr(request.app.state, "auth_manager", None)
-    if auth_mgr is not None and getattr(auth_mgr, "is_configured", False):
-        raise HTTPException(401, "Not authenticated")
-    # Unconfigured / first-run mode: only allow loopback callers. Public
-    # network traffic must authenticate even before auth is set up.
-    client = getattr(request, "client", None)
-    host = (client.host if client else "") or ""
-    if host in ("127.0.0.1", "::1", "localhost"):
-        return ""
-    raise HTTPException(401, "Not authenticated")
+    from src.auth_helpers import require_user_api_aware
+    return require_user_api_aware(request)
 
 
 def require_owner(request: Request, account_id: str | None = Query(None)) -> str:

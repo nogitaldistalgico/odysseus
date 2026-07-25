@@ -137,6 +137,17 @@ def require_privilege(request: Request, key: str) -> str:
     return user
 
 
+def require_user_api_aware(request: Request) -> str:
+    """Allow both browser sessions and API tokens, without privilege checks.
+    Used for endpoints like Calendar, Notes, Email, and Tasks that the iOS app accesses."""
+    if _is_api_token_request(request):
+        owner = getattr(request.state, "api_token_owner", None)
+        if not owner:
+            raise HTTPException(403, "API token has no owner")
+        return owner
+    return require_user(request)
+
+
 def require_privilege_api_aware(request: Request, key: str) -> str:
     """Allow both browser sessions and API tokens, but enforce privilege.
     Used for endpoints like Media Studio and Research that the iOS app accesses."""

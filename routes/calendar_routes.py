@@ -13,7 +13,7 @@ from sqlalchemy import or_, and_
 from dateutil.rrule import rrulestr
 
 from core.database import SessionLocal, CalendarCal, CalendarDeletedEvent, CalendarEvent
-from src.auth_helpers import effective_user, require_user
+from src.auth_helpers import effective_user, require_user, require_user_api_aware
 from src.upload_limits import read_upload_limited, ICS_MAX_BYTES
 from src.upload_handler import reserve_upload_references
 
@@ -66,15 +66,15 @@ _SINGLE_USER_MODE = _os.environ.get("ODYSSEUS_SINGLE_USER", "1") != "0"
 
 
 def _require_user(request: Request) -> str:
-    """Return the authenticated user. Uses require_user so AUTH_ENABLED=false
-    and single-user mode both work: require_user returns "" when auth is
+    """Return the authenticated user. Uses require_user_api_aware so AUTH_ENABLED=false
+    and single-user mode both work: it returns "" when auth is
     disabled or unconfigured, and only raises 401 when auth is configured but
     the caller is unauthenticated. Falls back to FALLBACK_OWNER for calendar
     writes so data isn't stored under an empty owner in single-user mode."""
-    user = require_user(request)
+    user = require_user_api_aware(request)
     if user:
         return user
-    # require_user returned "" — auth is off or unconfigured (single-user).
+    # require_user_api_aware returned "" — auth is off or unconfigured (single-user).
     # Use FALLBACK_OWNER so calendar rows have a stable owner for filtering.
     return FALLBACK_OWNER
 

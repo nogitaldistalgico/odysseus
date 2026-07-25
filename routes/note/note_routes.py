@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from core.database import SessionLocal, Note
 from core.middleware import INTERNAL_TOOL_USER
-from src.auth_helpers import require_user
+from src.auth_helpers import require_user_api_aware
 from src.constants import DATA_DIR
 from src.upload_handler import reserve_upload_references
 from sqlalchemy.orm.attributes import flag_modified
@@ -586,7 +586,7 @@ def setup_note_routes(task_scheduler=None, upload_handler=None):
     router = APIRouter(prefix="/api/notes", tags=["notes"])
 
     def _owner(request: Request) -> Optional[str]:
-        # require_user, not bare get_current_user: a request that reaches
+        # require_user_api_aware, not bare get_current_user: a request that reaches
         # these owner-scoped routes with NO identity (auth-middleware
         # regression, SSRF from a sibling service) must fail closed (401)
         # when auth is configured — not be treated as the single-user mode
@@ -595,7 +595,7 @@ def setup_note_routes(task_scheduler=None, upload_handler=None):
         # unconfigured first-run) still resolve to None, the single-user
         # path. fire_reminder below already gated this way; the CRUD routes
         # did not.
-        return require_user(request) or None
+        return require_user_api_aware(request) or None
 
     def _reserve_note_uploads(owner: Optional[str], *values) -> None:
         missing_id = reserve_upload_references(upload_handler, owner, *values)
@@ -849,7 +849,7 @@ def setup_note_routes(task_scheduler=None, upload_handler=None):
         Returns {synthesis, email_sent}.
         """
         # Gate against anonymous callers — LLM synthesis can burn tokens.
-        user = require_user(request)
+        user = require_user_api_aware(request)
         body = await request.json()
         note_id = str(body.get("note_id") or "").strip()
         if not note_id:
