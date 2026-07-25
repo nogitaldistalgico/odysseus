@@ -85,8 +85,11 @@ export function initFitnessModule(appElements, uiModule, sessionModule, chatModu
       calcBtn.disabled = true;
 
       try {
+        const sid = (window.sessionModule && window.sessionModule.getCurrentSessionId) ? window.sessionModule.getCurrentSessionId() : '';
         const res = await fetch(`${API_BASE}/api/fitness_coach/recalculate`, {
-          method: 'POST'
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sid })
         });
         
         if (res.ok) {

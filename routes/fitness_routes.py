@@ -147,6 +147,11 @@ def setup_fitness_routes() -> APIRouter:
     class FilePayload(BaseModel):
         content: str
 
+    class RecalculateRequest(BaseModel):
+        model: Optional[str] = None
+        endpoint_id: Optional[str] = None
+        session_id: Optional[str] = None
+
     ALLOWED_FITNESS_FILES = {"ziele.md", "wochenplan.md", "trainingsplan.md", "temporaere_notizen.md", "messwerte_log.md"}
 
     @router.get("/api/fitness_coach/files/{filename}")
@@ -185,7 +190,7 @@ def setup_fitness_routes() -> APIRouter:
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post("/api/fitness_coach/recalculate")
-    async def trigger_recalculation(request: Request):
+    async def trigger_recalculation(request: Request, payload: Optional[RecalculateRequest] = None):
         user = effective_user(request)
         if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
@@ -194,6 +199,7 @@ def setup_fitness_routes() -> APIRouter:
         from core.database import SessionLocal, ModelEndpoint
         from src.endpoint_resolver import (
             resolve_endpoint,
+            resolve_endpoint_by_id,
             resolve_endpoint_runtime,
             build_chat_url,
             build_headers,
@@ -225,9 +231,50 @@ Antworte AUSSCHLIESSLICH mit einem validen JSON-Objekt im Format:
 {{"score": 85, "text": "Gut", "tooltip": "Gute Erholung, heute ist ein Training möglich."}}
 Kein anderer Text!"""
 
-        url, model, headers = resolve_endpoint("default", owner=user)
-        if not url or not model:
-            # Fallback: Query first enabled ModelEndpoint from DB directly
+        url = None
+        model = None
+        headers = None
+
+        # 1. Explicit model & endpoint_id in payload
+        if payload and payload.endpoint_id:
+            res = resolve_endpoint_by_id(payload.endpoint_id, model=payload.model, owner=user)
+            if res:
+                url, model, headers = res
+
+        # 2. Session ID in payload or query parameter
+        sid = (payload.session_id if payload else None) or request.query_params.get("session_id")
+        if not url and sid:
+            sm = getattr(request.app.state, "session_manager", None)
+            if sm:
+                try:
+                    s = sm.get_session(sid)
+                    if s and getattr(s, "endpoint_url", None) and getattr(s, "model", None):
+                        url = s.endpoint_url
+                        model = s.model
+                        headers = getattr(s, "auth_headers", {}) or {}
+                except Exception:
+                    pass
+
+        # 3. User's Utility setting
+        if not url:
+            u, m, h = resolve_endpoint("utility", owner=user)
+            if u and m:
+                url, model, headers = u, m, h
+
+        # 4. User's Default setting
+        if not url:
+            u, m, h = resolve_endpoint("default", owner=user)
+            if u and m:
+                url, model, headers = u, m, h
+
+        # 5. Global Default setting
+        if not url:
+            u, m, h = resolve_endpoint("default", owner=None)
+            if u and m:
+                url, model, headers = u, m, h
+
+        # 6. Database fallback
+        if not url:
             db = SessionLocal()
             try:
                 q = db.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True)
@@ -239,7 +286,7 @@ Kein anderer Text!"""
                     base, api_key = resolve_endpoint_runtime(ep, owner=user)
                     url = build_chat_url(base)
                     headers = build_headers(api_key, base)
-                    model = _first_chat_model(_endpoint_enabled_models(ep))
+                    model = (payload.model if payload else None) or _first_chat_model(_endpoint_enabled_models(ep))
             except Exception as e:
                 print(f"Error querying fallback endpoint: {e}")
             finally:
