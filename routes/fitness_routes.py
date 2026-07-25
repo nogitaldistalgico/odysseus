@@ -201,12 +201,12 @@ def setup_fitness_routes() -> APIRouter:
                 async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                     data = {
                         "message": prompt_text,
-                        "incognito": True,
+                        "incognito": "true",
                         "mode": "agent",
-                        "is_subchat": True,
+                        "is_subchat": "true",
                         "is_fitness_coach": "true"
                     }
-                    await client.post("/api/chat", json=data, headers=headers, cookies=cookies, timeout=60.0)
+                    await client.post("/api/chat_stream", data=data, headers=headers, cookies=cookies, timeout=120.0)
             except Exception as e:
                 print(f"Error in background fitness recalculation: {e}")
                 
