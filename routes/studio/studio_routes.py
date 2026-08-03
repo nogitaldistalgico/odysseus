@@ -283,17 +283,40 @@ async def generate_video(request: Request, req: VideoGenRequest):
         
         if req.base_media_id:
             refs = []
-            for m_id in req.base_media_id.split(","):
+            frame_imgs = []
+            for idx, m_id in enumerate(req.base_media_id.split(",")):
                 m_id = m_id.strip()
                 if m_id:
+                    url = _get_base64_data_url(m_id)
                     refs.append({
                         "type": "image_url",
                         "image_url": {
-                            "url": _get_base64_data_url(m_id)
+                            "url": url
                         }
                     })
+                    
+                    # For video models on OpenRouter, the first image is typically the first_frame
+                    if idx == 0:
+                        frame_imgs.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": url
+                            },
+                            "frame_type": "first_frame"
+                        })
+                    elif idx == 1:
+                        # If a second image is passed, assume it's the last_frame
+                        frame_imgs.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": url
+                            },
+                            "frame_type": "last_frame"
+                        })
+
             if refs:
                 payload["input_references"] = refs
+                payload["frame_images"] = frame_imgs
 
         async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
             resp = await client.post("https://openrouter.ai/api/v1/videos", json=payload, headers=headers)
