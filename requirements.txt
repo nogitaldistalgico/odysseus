@@ -42,6 +42,9 @@ bcrypt
 # breaking rewrite, so keep fresh installs on the maintained v1 line until the
 # servers are migrated together.
 mcp<2
+# Image preprocessing for Studio video generation (resize/crop reference
+# images to model-valid resolutions). Used by routes/studio/studio_preprocess.py.
+Pillow
 pyotp
 qrcode[pil]
 croniter

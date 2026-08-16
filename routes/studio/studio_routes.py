@@ -16,6 +16,7 @@ from src.auth_helpers import get_current_user, effective_user
 from src.constants import STUDIO_MEDIA_DIR, UPLOAD_DIR
 from src.settings import load_settings, get_user_setting
 from routes.studio.studio_helpers import _owner_filter, _media_to_dict, get_openrouter_api_key, require_studio_privilege
+from routes.studio.studio_preprocess import get_model_constraints, preprocess_reference_image, validate_payload_params
 import mimetypes
 
 os.makedirs(STUDIO_MEDIA_DIR, exist_ok=True)
@@ -43,7 +44,8 @@ class VideoGenRequest(BaseModel):
     size: Optional[str] = None
     generate_audio: Optional[bool] = None
 
-def _get_base64_data_url(file_id: str) -> str:
+def _resolve_media_path(file_id: str) -> str:
+    """Resolve a media file ID to its absolute path on disk."""
     path = os.path.join(UPLOAD_DIR, file_id)
     if not os.path.isfile(path):
         for root, dirs, files in os.walk(UPLOAD_DIR):
@@ -52,10 +54,34 @@ def _get_base64_data_url(file_id: str) -> str:
                 break
     if not os.path.isfile(path):
         raise HTTPException(404, "Base media file not found")
-        
+    return path
+
+
+def _get_base64_data_url(file_id: str) -> str:
+    """Read a media file and return it as a base64 data-URL (unchanged)."""
+    path = _resolve_media_path(file_id)
     mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
     with open(path, "rb") as f:
         b64_str = base64.b64encode(f.read()).decode("utf-8")
+    return f"data:{mime};base64,{b64_str}"
+
+
+def _get_preprocessed_base64_data_url(file_id: str, model_constraints: dict) -> str:
+    """Read a media file, preprocess it (resize/crop) for the target video
+    model, and return the result as a base64 data-URL."""
+    path = _resolve_media_path(file_id)
+    with open(path, "rb") as f:
+        raw_bytes = f.read()
+
+    processed = preprocess_reference_image(raw_bytes, model_constraints)
+
+    # After preprocessing the output is always PNG
+    if processed is not raw_bytes:
+        mime = "image/png"
+    else:
+        mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+
+    b64_str = base64.b64encode(processed).decode("utf-8")
     return f"data:{mime};base64,{b64_str}"
 
 import time
@@ -66,26 +92,57 @@ CACHE_TTL = 3600 # 1 hour
 
 @router.get("/api/studio/models")
 async def get_studio_models():
-    """Returns a dynamic list of OpenRouter models for image and video generation."""
+    """Returns a dynamic list of OpenRouter models for image and video generation.
+    
+    Video model entries include constraint metadata (supported_resolutions,
+    supported_aspect_ratios, supported_sizes, supported_durations) so that
+    clients can populate dropdowns with only valid values.
+    """
     global _studio_models_cache, _studio_models_cache_time
     
     if _studio_models_cache and (time.time() - _studio_models_cache_time) < CACHE_TTL:
         return _studio_models_cache
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            img_resp, vid_resp = await asyncio.gather(
+        async with httpx.AsyncClient(timeout=15) as client:
+            img_resp, vid_resp, vid_constraints_resp = await asyncio.gather(
                 client.get("https://openrouter.ai/api/v1/models?output_modalities=image"),
-                client.get("https://openrouter.ai/api/v1/models?output_modalities=video")
+                client.get("https://openrouter.ai/api/v1/models?output_modalities=video"),
+                client.get("https://openrouter.ai/api/v1/videos/models"),
             )
             
             photos = []
             if img_resp.status_code == 200:
                 photos = [{"id": m["id"], "name": m.get("name", m["id"])} for m in img_resp.json().get("data", [])]
-                
+
+            # Build a lookup of per-model constraints from the dedicated
+            # video-models endpoint (supported_sizes, resolutions, etc.).
+            constraints_by_id: Dict[str, Any] = {}
+            if vid_constraints_resp.status_code == 200:
+                for m in vid_constraints_resp.json().get("data", []):
+                    mid = m.get("id")
+                    if mid:
+                        constraints_by_id[mid] = {
+                            "supported_resolutions": m.get("supported_resolutions", []),
+                            "supported_aspect_ratios": m.get("supported_aspect_ratios", []),
+                            "supported_sizes": m.get("supported_sizes", []),
+                            "supported_durations": m.get("supported_durations", []),
+                        }
+
             videos = []
             if vid_resp.status_code == 200:
-                videos = [{"id": m["id"], "name": m.get("name", m["id"])} for m in vid_resp.json().get("data", [])]
+                for m in vid_resp.json().get("data", []):
+                    entry: Dict[str, Any] = {
+                        "id": m["id"],
+                        "name": m.get("name", m["id"]),
+                    }
+                    # Merge constraints if available
+                    c = constraints_by_id.get(m["id"], {})
+                    entry["supported_resolutions"] = c.get("supported_resolutions", [])
+                    entry["supported_aspect_ratios"] = c.get("supported_aspect_ratios", [])
+                    entry["supported_sizes"] = c.get("supported_sizes", [])
+                    entry["supported_durations"] = c.get("supported_durations", [])
+                    videos.append(entry)
                 
             _studio_models_cache = {
                 "photo": photos,
@@ -100,6 +157,35 @@ async def get_studio_models():
             "photo": [{"id": "google/gemini-3-pro-image", "name": "Google Nano Banana Pro (Gemini 3)"}],
             "video": [{"id": "google/veo-2.0-pro", "name": "Google Veo 2.0 Pro"}]
         }
+
+
+@router.get("/api/studio/model-constraints/{model_id:path}")
+async def get_model_constraints_endpoint(model_id: str):
+    """Return the generation constraints for a specific video model.
+    
+    The iOS client should call this when the user selects a video model,
+    to populate dropdowns for resolution, aspect ratio, duration, etc.
+    with only the values that the chosen model actually supports.
+    
+    Response example:
+    ```json
+    {
+        "model_id": "google/veo-3.1",
+        "supported_resolutions": ["720p", "1080p"],
+        "supported_aspect_ratios": ["16:9", "9:16", "1:1"],
+        "supported_sizes": ["1280x720", "720x1280", "1920x1080", "1080x1920", "1080x1080"],
+        "supported_durations": [5, 8]
+    }
+    ```
+    """
+    constraints = await get_model_constraints(model_id)
+    return {
+        "model_id": model_id,
+        "supported_resolutions": constraints.get("supported_resolutions", []),
+        "supported_aspect_ratios": constraints.get("supported_aspect_ratios", []),
+        "supported_sizes": constraints.get("supported_sizes", []),
+        "supported_durations": constraints.get("supported_durations", []),
+    }
 
 @router.get("/api/studio/library")
 async def studio_library(
@@ -264,6 +350,9 @@ async def generate_video(request: Request, req: VideoGenRequest):
             "X-OpenRouter-Title": "Odysseus Studio"
         }
         
+        # Fetch model constraints for preprocessing and validation
+        constraints = await get_model_constraints(target_model)
+
         payload = {
             "model": target_model,
             "prompt": req.prompt
@@ -287,7 +376,9 @@ async def generate_video(request: Request, req: VideoGenRequest):
             for idx, m_id in enumerate(req.base_media_id.split(",")):
                 m_id = m_id.strip()
                 if m_id:
-                    url = _get_base64_data_url(m_id)
+                    # Preprocess: resize/crop the reference image to a
+                    # resolution the target model accepts.
+                    url = _get_preprocessed_base64_data_url(m_id, constraints)
                     refs.append({
                         "type": "image_url",
                         "image_url": {
@@ -317,6 +408,10 @@ async def generate_video(request: Request, req: VideoGenRequest):
             if refs:
                 payload["input_references"] = refs
                 payload["frame_images"] = frame_imgs
+
+        # Validate / correct resolution, aspect_ratio, duration against
+        # what the target model actually supports.
+        payload = validate_payload_params(payload, constraints)
 
         async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
             resp = await client.post("https://openrouter.ai/api/v1/videos", json=payload, headers=headers)
