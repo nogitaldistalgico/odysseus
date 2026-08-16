@@ -127,6 +127,7 @@ async def get_studio_models():
                             "supported_aspect_ratios": m.get("supported_aspect_ratios", []),
                             "supported_sizes": m.get("supported_sizes", []),
                             "supported_durations": m.get("supported_durations", []),
+                            "supported_frame_images": m.get("supported_frame_images"),
                         }
 
             videos = []
@@ -142,6 +143,8 @@ async def get_studio_models():
                     entry["supported_aspect_ratios"] = c.get("supported_aspect_ratios", [])
                     entry["supported_sizes"] = c.get("supported_sizes", [])
                     entry["supported_durations"] = c.get("supported_durations", [])
+                    if "supported_frame_images" in c:
+                        entry["supported_frame_images"] = c["supported_frame_images"]
                     videos.append(entry)
                 
             _studio_models_cache = {
@@ -185,6 +188,7 @@ async def get_model_constraints_endpoint(model_id: str):
         "supported_aspect_ratios": constraints.get("supported_aspect_ratios", []),
         "supported_sizes": constraints.get("supported_sizes", []),
         "supported_durations": constraints.get("supported_durations", []),
+        "supported_frame_images": constraints.get("supported_frame_images"),
     }
 
 @router.get("/api/studio/library")

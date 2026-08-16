@@ -303,4 +303,21 @@ def validate_payload_params(
     if sup_dur and "duration" in payload:
         payload["duration"] = _find_nearest_duration(payload["duration"], sup_dur)
 
+    # --- input_references vs frame_images ---
+    # The OpenRouter API is strict: if a video model supports frame_images (like Flux 3 Video),
+    # sending input_references causes a "does not support image input references" error.
+    # Conversely, older/other models might expect input_references and not frame_images.
+    if "supported_frame_images" in constraints:
+        sup_frame_imgs = constraints["supported_frame_images"]
+        if sup_frame_imgs is not None:
+            # Model explicitly supports frame_images. Remove input_references.
+            if "input_references" in payload:
+                logger.info("Model supports frame_images; removing input_references.")
+                del payload["input_references"]
+        else:
+            # Model does not specify frame_images support. Remove frame_images.
+            if "frame_images" in payload:
+                logger.info("Model does not specify frame_images support; removing frame_images.")
+                del payload["frame_images"]
+
     return payload
