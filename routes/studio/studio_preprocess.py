@@ -82,6 +82,7 @@ async def _fetch_video_model_constraints() -> Dict[str, Any]:
                     "supported_aspect_ratios": m.get("supported_aspect_ratios", []),
                     "supported_sizes": m.get("supported_sizes", []),
                     "supported_durations": m.get("supported_durations", []),
+                    "supported_frame_images": m.get("supported_frame_images"),
                     "allowed_passthrough_parameters": m.get("allowed_passthrough_parameters", []),
                     "supported_parameters": m.get("supported_parameters", []),
                 }
