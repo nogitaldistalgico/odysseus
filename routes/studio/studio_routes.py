@@ -37,9 +37,9 @@ async def _upload_video_temp(filepath: str) -> str:
     
     file.io is used here because it is a "one-time download" service: as soon as
     OpenRouter fetches the video, it is permanently deleted from the server."""
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
         with open(filepath, "rb") as f:
-            resp = await client.post("https://file.io", files={"file": f})
+            resp = await client.post("https://file.io/", files={"file": f})
         resp.raise_for_status()
         data = resp.json()
         url = data.get("link")
