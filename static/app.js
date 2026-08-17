@@ -51,6 +51,7 @@ import ttsModule from './js/tts-ai.js';
 import spinnerModule from './js/spinner.js';
 import { initFitnessModule } from './js/fitness.js';
 import { initKeyboardShortcuts } from './js/keyboard-shortcuts.js';
+import { getSettings } from './js/appConfig.js';
 import { initSidebarLayout, syncRailSide } from './js/sidebar-layout.js?v=20260715startupclean';
 import { initSectionCollapse, initSectionDrag } from './js/section-management.js';
 
@@ -1519,13 +1520,11 @@ function initializeEventListeners() {
     })
     .catch(() => {});
 
-  // Hide Gallery when image generation is disabled in settings
-  const _prefetchedSettings = sessionStorage.getItem('ody-prefetch-settings');
-  sessionStorage.removeItem('ody-prefetch-settings');
-  window._initSettingsReady = (_prefetchedSettings
-    ? Promise.resolve(JSON.parse(_prefetchedSettings))
-    : fetch(`${API_BASE}/api/auth/settings`, { credentials: 'same-origin' }).then(r => r.json())
-  ).then(settings => {
+  // Hide Gallery when image generation is disabled in settings.
+  // getSettings() consumes the login prefetch itself, so every other module
+  // that asks for settings this load gets the same snapshot without a request.
+  window._initSettingsReady = getSettings()
+    .then(settings => {
       // NOTE: image_gen_enabled only governs *generating* images in chat — the
       // tool is blocked server-side (chat_routes / agent_loop). The Gallery
       // holds uploads and past images too, so it stays visible regardless;
@@ -3706,7 +3705,7 @@ function startOdysseusApp() {
   modelsModule.init(API_BASE);
   ragModule.init(API_BASE);
   presetsModule.init(API_BASE);
-  searchModule.init(API_BASE);
+  searchModule.init();
   chatModule.init(API_BASE);
   chatModule.initListeners();
   groupModule.init(API_BASE);
