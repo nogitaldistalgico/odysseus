@@ -34,9 +34,20 @@ def _sync_upload_and_presign(filepath: str, object_name: str, expiration: int = 
 
     s3_client = _get_s3_client()
     
+    # Guess the correct MIME type (e.g. video/mp4) so OpenRouter accepts it
+    import mimetypes
+    content_type, _ = mimetypes.guess_type(filepath)
+    if not content_type:
+        content_type = "video/mp4"
+
     # Upload the file
     try:
-        s3_client.upload_file(filepath, bucket_name, object_name)
+        s3_client.upload_file(
+            filepath, 
+            bucket_name, 
+            object_name, 
+            ExtraArgs={'ContentType': content_type}
+        )
     except ClientError as e:
         logger.error(f"Failed to upload to S3: {e}")
         raise RuntimeError(f"S3 Upload failed: {e}")
