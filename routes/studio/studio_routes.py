@@ -154,6 +154,10 @@ async def get_studio_models():
                             "supported_sizes": m.get("supported_sizes", []),
                             "supported_durations": m.get("supported_durations", []),
                             "supported_frame_images": m.get("supported_frame_images"),
+                            "pricing_skus": m.get("pricing_skus", {}),
+                            "description": m.get("description", ""),
+                            "supported_parameters": m.get("supported_parameters", []),
+                            "allowed_passthrough_parameters": m.get("allowed_passthrough_parameters", []),
                         }
 
             videos = []
@@ -546,6 +550,34 @@ async def check_video_job(request: Request, media_id: str):
                     vid_resp.raise_for_status()
                     with open(filepath, "wb") as f:
                         f.write(vid_resp.content)
+                    
+                    # Async concatenation
+                    if m.source_media_id and str(m.source_media_id).endswith(":concat"):
+                        real_source_id = str(m.source_media_id).split(":")[0]
+                        source = db.query(StudioMedia).filter(StudioMedia.id == real_source_id).first()
+                        if source:
+                            source_path = os.path.join(STUDIO_MEDIA_DIR, source.filename)
+                            if os.path.exists(source_path):
+                                try:
+                                    import uuid
+                                    concat_id = f"stv_{uuid.uuid4().hex[:12]}"
+                                    concat_path = os.path.join(STUDIO_MEDIA_DIR, f"{concat_id}.mp4")
+                                    await concatenate_videos(source_path, filepath, concat_path)
+                                    
+                                    # Overwrite the segment with concatenated video
+                                    os.replace(concat_path, filepath)
+                                    logger.info("Concatenated async extended video for %s", m.id)
+                                    
+                                    if is_ffmpeg_available():
+                                        c_info = await get_video_info(filepath)
+                                        m.duration = c_info.get("duration")
+                                        m.width = c_info.get("width")
+                                        m.height = c_info.get("height")
+                                        m.fps = c_info.get("fps")
+                                except Exception as e:
+                                    logger.warning("Async concatenation failed, keeping segment: %s", e)
+                        m.source_media_id = real_source_id
+
                     m.file_size = os.path.getsize(filepath)
                     m.job_status = "completed"
                     db.commit()
@@ -772,7 +804,7 @@ async def extend_video(request: Request, req: VideoExtendRequest):
                 owner=user,
                 job_id=polling_url or job_id,
                 job_status="pending" if polling_url else "completed",
-                source_media_id=req.source_video_id,
+                source_media_id=f"{req.source_video_id}:concat" if req.concatenate else req.source_video_id,
                 generation_mode=generation_mode,
             )
 
