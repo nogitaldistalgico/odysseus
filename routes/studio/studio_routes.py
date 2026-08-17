@@ -230,16 +230,24 @@ async def studio_library(
     user = effective_user(request)
     db = SessionLocal()
     try:
-        q = db.query(StudioMedia).filter(StudioMedia.is_active == True)
-        q = _owner_filter(q, user)
-        total = q.count()
-        rows = q.order_by(StudioMedia.created_at.desc()).offset(offset).limit(limit).all()
-        return {
-            "media": [_media_to_dict(m) for m in rows],
-            "total": total,
-            "offset": offset,
-            "limit": limit
-        }
+        try:
+            q = db.query(StudioMedia).filter(StudioMedia.is_active == True)
+            q = _owner_filter(q, user)
+            total = q.count()
+            rows = q.order_by(StudioMedia.created_at.desc()).offset(offset).limit(limit).all()
+        except Exception as e:
+            logger.error(f"Error executing DB query in studio_library: {repr(e)}", exc_info=True)
+            raise
+        try:
+            return {
+                "media": [_media_to_dict(m) for m in rows],
+                "total": total,
+                "offset": offset,
+                "limit": limit
+            }
+        except Exception as e:
+            logger.error(f"Error dictifying media in studio_library: {repr(e)}", exc_info=True)
+            raise
     finally:
         db.close()
 
