@@ -418,6 +418,7 @@ if AUTH_ENABLED:
                 raw_token = auth_header[7:]
                 # Sanity check: tokens are "ody_" + 43 chars of base64
                 if len(raw_token) < 12 or len(raw_token) > 100:
+                    logger.warning(f"401 Unauthorized for path {request.url.path} (token length check failed)")
                     return JSONResponse(status_code=401, content={"error": "Invalid API token"})
                 prefix = raw_token[:8]
                 try:
@@ -464,12 +465,14 @@ if AUTH_ENABLED:
                 except Exception:
                     logger.warning("API token auth error", exc_info=False)
                 # Invalid bearer token — reject immediately
+                logger.warning(f"401 Unauthorized for path {request.url.path} (invalid bearer token)")
                 return JSONResponse(status_code=401, content={"error": "Invalid API token"})
 
             # --- Cookie-based session auth ---
             token = request.cookies.get(SESSION_COOKIE)
             if not auth_manager.validate_token(token):
                 if path.startswith("/api/"):
+                    logger.warning(f"401 Unauthorized for path {request.url.path} (no valid cookie and not a bearer token)")
                     return JSONResponse(status_code=401, content={"error": "Not authenticated"})
                 return RedirectResponse(
                     url=with_asgi_root_path(request.scope, "/login"),
