@@ -332,30 +332,65 @@ def validate_payload_params(
 
 def supports_real_continuation(constraints: Dict[str, Any]) -> bool:
     """Return *True* if the model supports real video continuation (sending
-    an existing video as reference input, not just a single frame).
-
-    Detection heuristic: the model's ``pricing_skus`` contain a key with
-    ``'video_input'`` or ``'video_continuation'`` — these indicate the provider
-    bills differently for video-reference jobs."""
+    an existing video as reference input, not just a single frame)."""
+    
+    # 1. Check pricing SKUs for video input billing
     skus = constraints.get("pricing_skus", {})
     if isinstance(skus, dict):
-        keys = skus.keys()
+        keys = list(skus.keys())
     elif isinstance(skus, list):
         keys = skus
     else:
-        return False
-    return any("video_input" in k or "video_continuation" in k for k in keys)
+        keys = []
+        
+    for k in keys:
+        k_lower = str(k).lower()
+        if "video_input" in k_lower or "video_continuation" in k_lower or "input_video" in k_lower:
+            return True
+
+    # 2. Check supported/allowed parameters
+    params = constraints.get("supported_parameters", []) + constraints.get("allowed_passthrough_parameters", [])
+    for p in params:
+        p_lower = str(p).lower()
+        if "continuation" in p_lower or p_lower in ["input_video", "video_input", "reference_video"]:
+            return True
+            
+    # 3. Check description for continuation-specific keywords
+    desc = str(constraints.get("description", "")).lower()
+    continuation_kws = ["continuation", "extend video", "video extension", "continue video", "flux 3 video"]
+    if any(kw in desc for kw in continuation_kws):
+        return True
+
+    return False
 
 
 def supports_video_editing(constraints: Dict[str, Any]) -> bool:
     """Return *True* if the model is a video-editing model (accepts video
-    input and text instructions to modify existing footage).
-
-    Detection heuristic: models with ``supported_frame_images == None`` that
-    mention editing-related terms in their description are video editors,
-    not generators."""
-    if constraints.get("supported_frame_images") is not None:
-        return False
+    input and text instructions to modify existing footage)."""
+    
     desc = str(constraints.get("description", "")).lower()
-    editing_keywords = ["edit", "editing", "modify", "transform", "in-context"]
-    return any(kw in desc for kw in editing_keywords)
+    
+    # 1. Strong description keywords that definitively indicate video editing
+    strong_keywords = [
+        "video editing", "edit video", "video-to-video", "vid2vid",
+        "modify existing video", "transform video", "video editor",
+        "aleph 2"
+    ]
+    if any(kw in desc for kw in strong_keywords):
+        return True
+        
+    # 2. Check supported/allowed parameters for editing flags
+    params = constraints.get("supported_parameters", []) + constraints.get("allowed_passthrough_parameters", [])
+    for p in params:
+        p_lower = str(p).lower()
+        if "edit" in p_lower or "instruction" in p_lower or "video_to_video" in p_lower:
+            return True
+
+    # 3. Fallback heuristic: models without 'supported_frame_images' (not frame-based gen) 
+    # but with editing-related terms in description
+    if constraints.get("supported_frame_images") is None:
+        loose_keywords = ["edit", "editing", "modify", "transform", "in-context"]
+        if any(kw in desc for kw in loose_keywords):
+            return True
+            
+    return False
