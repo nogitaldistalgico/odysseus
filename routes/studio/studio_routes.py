@@ -738,19 +738,17 @@ async def extend_video(request: Request, req: VideoExtendRequest):
                 )
 
             # Read source video and encode as base64 data URL
-            with open(source_path, "rb") as vf:
-                video_b64 = base64.b64encode(vf.read()).decode("utf-8")
-            video_mime = mimetypes.guess_type(source_path)[0] or "video/mp4"
-            video_data_url = f"data:{video_mime};base64,{video_b64}"
+            # Upload source video to temporary host for OpenRouter HTTPS requirement
+            video_url = await _upload_video_temp(source_path)
 
             payload["input_video"] = {
                 "type": "video_url",
-                "video_url": {"url": video_data_url},
+                "video_url": {"url": video_url},
             }
             payload["input_references"] = [
                 {
                     "type": "video_url",
-                    "video_url": {"url": video_data_url},
+                    "video_url": {"url": video_url},
                 }
             ]
             generation_mode = "extend_continuation"
@@ -920,23 +918,20 @@ async def edit_video(request: Request, req: VideoEditRequest):
             "X-OpenRouter-Title": "Odysseus Studio",
         }
 
-        # 3. Build payload — read source video as base64
-        with open(source_path, "rb") as vf:
-            video_b64 = base64.b64encode(vf.read()).decode("utf-8")
-        video_mime = mimetypes.guess_type(source_path)[0] or "video/mp4"
-        video_data_url = f"data:{video_mime};base64,{video_b64}"
+        # 3. Build payload — upload source video to tmpfiles for OpenRouter HTTPS requirement
+        video_url = await _upload_video_temp(source_path)
 
         payload: Dict[str, Any] = {
             "model": target_model,
             "prompt": req.prompt,
             "input_video": {
                 "type": "video_url",
-                "video_url": {"url": video_data_url},
+                "video_url": {"url": video_url},
             },
             "input_references": [
                 {
                     "type": "video_url",
-                    "video_url": {"url": video_data_url},
+                    "video_url": {"url": video_url},
                 }
             ],
         }
