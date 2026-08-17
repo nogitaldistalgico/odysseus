@@ -30,6 +30,21 @@ os.makedirs(STUDIO_MEDIA_DIR, exist_ok=True)
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+async def _upload_video_temp(filepath: str) -> str:
+    """Upload a local video file to tmpfiles.org and return the direct HTTPS download URL.
+    This is required because some OpenRouter video models (like Runway Aleph 2) strictly 
+    require a public HTTPS URL and reject base64 data URLs."""
+    async with httpx.AsyncClient(timeout=120) as client:
+        with open(filepath, "rb") as f:
+            resp = await client.post("https://tmpfiles.org/api/v1/upload", files={"file": f})
+        resp.raise_for_status()
+        url = resp.json().get("data", {}).get("url")
+        if not url:
+            raise RuntimeError("Failed to upload video to temporary host")
+        
+        # Convert to direct download link
+        return url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+
 STUDIO_VIDEO_EXTS = {"mp4", "mov", "webm", "mkv", "m4v"}
 
 class PhotoGenRequest(BaseModel):
