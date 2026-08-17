@@ -5,7 +5,7 @@ import time
 import httpx
 import logging
 import base64
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from fastapi import APIRouter, Request, HTTPException, Query, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
@@ -15,13 +15,22 @@ from core.database import SessionLocal, StudioMedia
 from src.auth_helpers import get_current_user, effective_user
 from src.constants import STUDIO_MEDIA_DIR, UPLOAD_DIR
 from src.settings import load_settings, get_user_setting
+from src.upload_limits import STUDIO_UPLOAD_MAX_BYTES, read_upload_limited
 from routes.studio.studio_helpers import _owner_filter, _media_to_dict, get_openrouter_api_key, require_studio_privilege
-from routes.studio.studio_preprocess import get_model_constraints, preprocess_reference_image, validate_payload_params
+from routes.studio.studio_preprocess import (
+    get_model_constraints, preprocess_reference_image, validate_payload_params,
+    supports_real_continuation, supports_video_editing,
+)
+from routes.studio.studio_ffmpeg import (
+    get_video_info, extract_last_frame, concatenate_videos, is_ffmpeg_available,
+)
 import mimetypes
 
 os.makedirs(STUDIO_MEDIA_DIR, exist_ok=True)
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+STUDIO_VIDEO_EXTS = {"mp4", "mov", "webm", "mkv", "m4v"}
 
 class PhotoGenRequest(BaseModel):
     prompt: str
@@ -43,6 +52,23 @@ class VideoGenRequest(BaseModel):
     aspect_ratio: Optional[str] = None
     size: Optional[str] = None
     generate_audio: Optional[bool] = None
+
+class VideoExtendRequest(BaseModel):
+    source_video_id: str
+    prompt: str
+    model: Optional[str] = None
+    duration: Optional[int] = None
+    resolution: Optional[str] = None
+    aspect_ratio: Optional[str] = None
+    use_real_continuation: bool = False
+    concatenate: bool = True
+    generate_audio: Optional[bool] = None
+
+class VideoEditRequest(BaseModel):
+    source_video_id: str
+    prompt: str
+    model: Optional[str] = None
+    aspect_ratio: Optional[str] = None
 
 def _resolve_media_path(file_id: str) -> str:
     """Resolve a media file ID to its absolute path on disk."""
@@ -145,6 +171,8 @@ async def get_studio_models():
                     entry["supported_durations"] = c.get("supported_durations", [])
                     if "supported_frame_images" in c:
                         entry["supported_frame_images"] = c["supported_frame_images"]
+                    entry["supports_continuation"] = supports_real_continuation(c)
+                    entry["supports_video_editing"] = supports_video_editing(c)
                     videos.append(entry)
                 
             _studio_models_cache = {
@@ -189,6 +217,8 @@ async def get_model_constraints_endpoint(model_id: str):
         "supported_sizes": constraints.get("supported_sizes", []),
         "supported_durations": constraints.get("supported_durations", []),
         "supported_frame_images": constraints.get("supported_frame_images"),
+        "supports_continuation": supports_real_continuation(constraints),
+        "supports_video_editing": supports_video_editing(constraints),
     }
 
 @router.get("/api/studio/library")
@@ -521,6 +551,408 @@ async def check_video_job(request: Request, media_id: str):
             return _media_to_dict(m)
     finally:
         db.close()
+
+# ---------------------------------------------------------------------------
+# Video Upload
+# ---------------------------------------------------------------------------
+
+@router.post("/api/studio/upload")
+async def studio_upload_video(request: Request, file: UploadFile = File(...)):
+    """Upload a video file to the Studio library.
+
+    Accepts mp4, mov, webm, mkv, m4v up to 100 MB (configurable via
+    ODYSSEUS_STUDIO_UPLOAD_MAX_BYTES).  Video metadata (duration, resolution,
+    fps) is extracted via FFmpeg/ffprobe when available.
+    """
+    user = require_studio_privilege(request)
+
+    # Validate file extension
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower() if file.filename else ""
+    if ext not in STUDIO_VIDEO_EXTS:
+        raise HTTPException(
+            400,
+            f"Unsupported file type '.{ext}'. Accepted: {', '.join(sorted(STUDIO_VIDEO_EXTS))}",
+        )
+
+    data = await read_upload_limited(file, STUDIO_UPLOAD_MAX_BYTES, "Studio video upload")
+
+    media_id = f"stu_{uuid.uuid4().hex[:12]}"
+    filename = f"{media_id}.{ext}"
+    filepath = os.path.join(STUDIO_MEDIA_DIR, filename)
+
+    with open(filepath, "wb") as f:
+        f.write(data)
+
+    # Extract video metadata via FFmpeg (best-effort)
+    info = {}
+    if is_ffmpeg_available():
+        try:
+            info = await get_video_info(filepath)
+        except Exception as e:
+            logger.warning("Failed to read video metadata for %s: %s", filename, e)
+
+    db = SessionLocal()
+    try:
+        new_media = StudioMedia(
+            id=media_id,
+            filename=filename,
+            media_type="video",
+            prompt="",
+            owner=user,
+            job_status="completed",
+            file_size=len(data),
+            width=info.get("width"),
+            height=info.get("height"),
+            duration=info.get("duration"),
+            fps=info.get("fps"),
+            generation_mode="upload",
+        )
+        db.add(new_media)
+        db.commit()
+        return _media_to_dict(new_media)
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Video Extension (Continuation)
+# ---------------------------------------------------------------------------
+
+@router.post("/api/studio/extend-video")
+async def extend_video(request: Request, req: VideoExtendRequest):
+    """Extend an existing video by generating a new segment and optionally
+    concatenating it to the original.
+
+    Supports two modes:
+    - ``use_real_continuation=false`` (default): extracts the last frame of the
+      source video and sends it as ``first_frame`` to the model.  Works with
+      any model that supports ``first_frame``.  Cheaper.
+    - ``use_real_continuation=true``: sends the entire source video as reference
+      input so the model can continue the motion.  Only available for models
+      whose ``pricing_skus`` contain ``video_input`` or ``video_continuation``.
+      More expensive but produces seamless results.
+    """
+    user = require_studio_privilege(request)
+    db = SessionLocal()
+    try:
+        # 1. Load source video
+        source = db.query(StudioMedia).filter(
+            StudioMedia.id == req.source_video_id,
+            StudioMedia.is_active == True,
+        ).first()
+        if not source or (source.owner and source.owner != user):
+            raise HTTPException(404, "Source video not found")
+        if source.media_type != "video":
+            raise HTTPException(400, "Source media is not a video")
+        if source.job_status != "completed":
+            raise HTTPException(400, "Source video is not yet ready (still generating)")
+
+        source_path = os.path.join(STUDIO_MEDIA_DIR, source.filename)
+        if not os.path.isfile(source_path):
+            raise HTTPException(404, "Source video file not found on disk")
+
+        # 2. Resolve model & constraints
+        api_key = get_openrouter_api_key(db)
+        if not api_key:
+            raise HTTPException(400, "OpenRouter API key not configured.")
+
+        settings = load_settings()
+        target_model = req.model or get_user_setting(
+            "studio_openrouter_video_model", user,
+            settings.get("studio_openrouter_video_model", ""),
+        )
+        if not target_model:
+            raise HTTPException(400, "No video model specified.")
+
+        constraints = await get_model_constraints(target_model)
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "https://github.com/pewdiepie-archdaemon/odysseus",
+            "X-OpenRouter-Title": "Odysseus Studio",
+        }
+
+        # 3. Build payload
+        payload: Dict[str, Any] = {
+            "model": target_model,
+            "prompt": req.prompt,
+        }
+        if req.duration is not None:
+            payload["duration"] = req.duration
+        if req.resolution:
+            payload["resolution"] = req.resolution
+        if req.aspect_ratio:
+            payload["aspect_ratio"] = req.aspect_ratio
+        if req.generate_audio is not None:
+            payload["generate_audio"] = req.generate_audio
+
+        generation_mode: str
+
+        if req.use_real_continuation:
+            # --- Real continuation: send entire video as reference ---
+            if not supports_real_continuation(constraints):
+                raise HTTPException(
+                    400,
+                    f"Model '{target_model}' does not support real video continuation. "
+                    "Set use_real_continuation=false to use frame-based extension instead.",
+                )
+
+            # Read source video and encode as base64 data URL
+            with open(source_path, "rb") as vf:
+                video_b64 = base64.b64encode(vf.read()).decode("utf-8")
+            video_mime = mimetypes.guess_type(source_path)[0] or "video/mp4"
+            video_data_url = f"data:{video_mime};base64,{video_b64}"
+
+            payload["input_video"] = {
+                "type": "video_url",
+                "video_url": {"url": video_data_url},
+            }
+            generation_mode = "extend_continuation"
+            logger.info("Video extend: using real continuation for model %s", target_model)
+        else:
+            # --- Frame-based fallback: extract last frame ---
+            if not is_ffmpeg_available():
+                raise HTTPException(
+                    500,
+                    "FFmpeg is not installed on the server. Cannot extract video frames.",
+                )
+
+            last_frame_png = await extract_last_frame(source_path)
+            frame_b64 = base64.b64encode(last_frame_png).decode("utf-8")
+            frame_data_url = f"data:image/png;base64,{frame_b64}"
+
+            # Preprocess the frame for the target model
+            preprocessed = preprocess_reference_image(last_frame_png, constraints)
+            if preprocessed is not last_frame_png:
+                frame_b64 = base64.b64encode(preprocessed).decode("utf-8")
+                frame_data_url = f"data:image/png;base64,{frame_b64}"
+
+            payload["frame_images"] = [{
+                "type": "image_url",
+                "image_url": {"url": frame_data_url},
+                "frame_type": "first_frame",
+            }]
+            generation_mode = "extend_frame"
+            logger.info("Video extend: using last-frame fallback for model %s", target_model)
+
+        # Validate payload params
+        payload = validate_payload_params(payload, constraints)
+
+        # 4. Send to OpenRouter
+        async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+            resp = await client.post(
+                "https://openrouter.ai/api/v1/videos",
+                json=payload, headers=headers,
+            )
+            if resp.status_code not in (200, 202):
+                raise HTTPException(500, f"OpenRouter API error: {resp.status_code} {resp.text}")
+
+            data = resp.json()
+            url_data = data.get("data", [{}])[0].get("url")
+            polling_url = data.get("polling_url")
+            job_id = data.get("id")
+
+            media_id = f"stv_{uuid.uuid4().hex[:12]}"
+            filename = f"{media_id}.mp4"
+
+            new_media = StudioMedia(
+                id=media_id,
+                filename=filename,
+                media_type="video",
+                prompt=req.prompt,
+                model=target_model,
+                owner=user,
+                job_id=polling_url or job_id,
+                job_status="pending" if polling_url else "completed",
+                source_media_id=req.source_video_id,
+                generation_mode=generation_mode,
+            )
+
+            if url_data:
+                filepath = os.path.join(STUDIO_MEDIA_DIR, filename)
+                req_headers = headers if "openrouter.ai" in url_data else None
+                vid_resp = await client.get(url_data, headers=req_headers)
+                vid_resp.raise_for_status()
+                with open(filepath, "wb") as f:
+                    f.write(vid_resp.content)
+                new_media.file_size = os.path.getsize(filepath)
+
+                # Concatenate if requested and sync-completed
+                if req.concatenate:
+                    try:
+                        concat_id = f"stv_{uuid.uuid4().hex[:12]}"
+                        concat_filename = f"{concat_id}.mp4"
+                        concat_path = os.path.join(STUDIO_MEDIA_DIR, concat_filename)
+                        await concatenate_videos(source_path, filepath, concat_path)
+
+                        concat_info = await get_video_info(concat_path) if is_ffmpeg_available() else {}
+                        new_media.id = concat_id
+                        new_media.filename = concat_filename
+                        new_media.file_size = os.path.getsize(concat_path)
+                        new_media.duration = concat_info.get("duration")
+                        new_media.width = concat_info.get("width")
+                        new_media.height = concat_info.get("height")
+                        new_media.fps = concat_info.get("fps")
+                        # Clean up the un-concatenated segment
+                        os.remove(filepath)
+                        logger.info("Concatenated extended video: %s", concat_filename)
+                    except Exception as e:
+                        logger.warning("Concatenation failed, keeping segment only: %s", e)
+
+            db.add(new_media)
+            db.commit()
+
+            result = _media_to_dict(new_media)
+            result["concatenated"] = req.concatenate
+            result["continuation_mode"] = generation_mode
+            return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Video extension failed")
+        raise HTTPException(500, str(e))
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Video Editing
+# ---------------------------------------------------------------------------
+
+@router.post("/api/studio/edit-video")
+async def edit_video(request: Request, req: VideoEditRequest):
+    """Edit an existing video using AI (e.g. Runway Aleph 2.0).
+
+    Sends the source video and a text prompt describing the desired changes
+    to a video-editing model.  The original video is preserved; the edited
+    result is stored as a new StudioMedia entry.
+    """
+    user = require_studio_privilege(request)
+    db = SessionLocal()
+    try:
+        # 1. Load source video
+        source = db.query(StudioMedia).filter(
+            StudioMedia.id == req.source_video_id,
+            StudioMedia.is_active == True,
+        ).first()
+        if not source or (source.owner and source.owner != user):
+            raise HTTPException(404, "Source video not found")
+        if source.media_type != "video":
+            raise HTTPException(400, "Source media is not a video")
+        if source.job_status != "completed":
+            raise HTTPException(400, "Source video is not yet ready (still generating)")
+
+        source_path = os.path.join(STUDIO_MEDIA_DIR, source.filename)
+        if not os.path.isfile(source_path):
+            raise HTTPException(404, "Source video file not found on disk")
+
+        # 2. Resolve model & constraints
+        api_key = get_openrouter_api_key(db)
+        if not api_key:
+            raise HTTPException(400, "OpenRouter API key not configured.")
+
+        settings = load_settings()
+        target_model = req.model or get_user_setting(
+            "studio_openrouter_video_model", user,
+            settings.get("studio_openrouter_video_model", ""),
+        )
+        if not target_model:
+            raise HTTPException(400, "No video model specified.")
+
+        constraints = await get_model_constraints(target_model)
+
+        if not supports_video_editing(constraints):
+            raise HTTPException(
+                400,
+                f"Model '{target_model}' does not support video editing. "
+                "Use a video editing model like 'runway/aleph-2'.",
+            )
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "https://github.com/pewdiepie-archdaemon/odysseus",
+            "X-OpenRouter-Title": "Odysseus Studio",
+        }
+
+        # 3. Build payload — read source video as base64
+        with open(source_path, "rb") as vf:
+            video_b64 = base64.b64encode(vf.read()).decode("utf-8")
+        video_mime = mimetypes.guess_type(source_path)[0] or "video/mp4"
+        video_data_url = f"data:{video_mime};base64,{video_b64}"
+
+        payload: Dict[str, Any] = {
+            "model": target_model,
+            "prompt": req.prompt,
+            "input_video": {
+                "type": "video_url",
+                "video_url": {"url": video_data_url},
+            },
+        }
+        if req.aspect_ratio:
+            payload["aspect_ratio"] = req.aspect_ratio
+
+        payload = validate_payload_params(payload, constraints)
+
+        # 4. Send to OpenRouter
+        async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+            resp = await client.post(
+                "https://openrouter.ai/api/v1/videos",
+                json=payload, headers=headers,
+            )
+            if resp.status_code not in (200, 202):
+                raise HTTPException(500, f"OpenRouter API error: {resp.status_code} {resp.text}")
+
+            data = resp.json()
+            url_data = data.get("data", [{}])[0].get("url")
+            polling_url = data.get("polling_url")
+            job_id = data.get("id")
+
+            media_id = f"stv_{uuid.uuid4().hex[:12]}"
+            filename = f"{media_id}.mp4"
+
+            new_media = StudioMedia(
+                id=media_id,
+                filename=filename,
+                media_type="video",
+                prompt=req.prompt,
+                model=target_model,
+                owner=user,
+                job_id=polling_url or job_id,
+                job_status="pending" if polling_url else "completed",
+                source_media_id=req.source_video_id,
+                generation_mode="edit",
+            )
+
+            if url_data:
+                filepath = os.path.join(STUDIO_MEDIA_DIR, filename)
+                req_headers = headers if "openrouter.ai" in url_data else None
+                vid_resp = await client.get(url_data, headers=req_headers)
+                vid_resp.raise_for_status()
+                with open(filepath, "wb") as f:
+                    f.write(vid_resp.content)
+                new_media.file_size = os.path.getsize(filepath)
+
+                if is_ffmpeg_available():
+                    try:
+                        info = await get_video_info(filepath)
+                        new_media.duration = info.get("duration")
+                        new_media.width = info.get("width")
+                        new_media.height = info.get("height")
+                        new_media.fps = info.get("fps")
+                    except Exception:
+                        pass
+
+            db.add(new_media)
+            db.commit()
+            return _media_to_dict(new_media)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Video editing failed")
+        raise HTTPException(500, str(e))
+    finally:
+        db.close()
+
 
 @router.get("/api/studio/debug_video")
 async def debug_video(request: Request):

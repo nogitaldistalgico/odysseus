@@ -65,6 +65,10 @@ def _media_to_dict(media: StudioMedia) -> Dict[str, Any]:
         "width": media.width,
         "height": media.height,
         "file_size": media.file_size,
+        "duration": media.duration,
+        "fps": media.fps,
+        "source_media_id": media.source_media_id,
+        "generation_mode": media.generation_mode,
         "created_at": media.created_at.isoformat() if media.created_at else None,
         "updated_at": media.updated_at.isoformat() if media.updated_at else None,
     }

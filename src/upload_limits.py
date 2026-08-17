@@ -59,6 +59,9 @@ STT_MAX_AUDIO_BYTES = read_byte_limit_env(
 ICS_MAX_BYTES = read_byte_limit_env(
     "ODYSSEUS_ICS_MAX_BYTES", 10 * 1024 * 1024
 )
+STUDIO_UPLOAD_MAX_BYTES = read_byte_limit_env(
+    "ODYSSEUS_STUDIO_UPLOAD_MAX_BYTES", 100 * 1024 * 1024
+)
 
 
 async def read_upload_limited(upload: UploadFile, limit: int, label: str = "Upload") -> bytes:

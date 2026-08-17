@@ -83,6 +83,8 @@ async def _fetch_video_model_constraints() -> Dict[str, Any]:
                     "supported_sizes": m.get("supported_sizes", []),
                     "supported_durations": m.get("supported_durations", []),
                     "supported_frame_images": m.get("supported_frame_images"),
+                    "pricing_skus": m.get("pricing_skus", {}),
+                    "description": m.get("description", ""),
                     "allowed_passthrough_parameters": m.get("allowed_passthrough_parameters", []),
                     "supported_parameters": m.get("supported_parameters", []),
                 }
@@ -322,3 +324,38 @@ def validate_payload_params(
                 del payload["frame_images"]
 
     return payload
+
+
+# ---------------------------------------------------------------------------
+# Capability detection
+# ---------------------------------------------------------------------------
+
+def supports_real_continuation(constraints: Dict[str, Any]) -> bool:
+    """Return *True* if the model supports real video continuation (sending
+    an existing video as reference input, not just a single frame).
+
+    Detection heuristic: the model's ``pricing_skus`` contain a key with
+    ``'video_input'`` or ``'video_continuation'`` — these indicate the provider
+    bills differently for video-reference jobs."""
+    skus = constraints.get("pricing_skus", {})
+    if isinstance(skus, dict):
+        keys = skus.keys()
+    elif isinstance(skus, list):
+        keys = skus
+    else:
+        return False
+    return any("video_input" in k or "video_continuation" in k for k in keys)
+
+
+def supports_video_editing(constraints: Dict[str, Any]) -> bool:
+    """Return *True* if the model is a video-editing model (accepts video
+    input and text instructions to modify existing footage).
+
+    Detection heuristic: models with ``supported_frame_images == None`` that
+    mention editing-related terms in their description are video editors,
+    not generators."""
+    if constraints.get("supported_frame_images") is not None:
+        return False
+    desc = str(constraints.get("description", "")).lower()
+    editing_keywords = ["edit", "editing", "modify", "transform", "in-context"]
+    return any(kw in desc for kw in editing_keywords)

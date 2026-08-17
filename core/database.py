@@ -405,6 +405,14 @@ class StudioMedia(TimestampMixin, Base):
     height     = Column(Integer, nullable=True)
     file_size  = Column(Integer, nullable=True)  # bytes
 
+    # Video metadata (populated by FFmpeg on upload or after generation)
+    duration        = Column(Float, nullable=True)       # Duration in seconds
+    fps             = Column(Float, nullable=True)       # Frames per second
+
+    # Continuation / editing tracking
+    source_media_id = Column(String, nullable=True)      # ID of source video for extend/edit
+    generation_mode = Column(String, nullable=True)      # "generate", "upload", "extend_frame", "extend_continuation", "edit"
+
     __table_args__ = (
         Index('ix_studio_media_active', 'is_active', 'created_at'),
         Index('ix_studio_media_owner', 'owner'),
