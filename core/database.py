@@ -2095,6 +2095,26 @@ def _migrate_seed_email_account():
 # Any future migrations or schema changes that temporarily violate foreign-key
 # constraints will fail. To perform such operations, foreign_keys must be
 # temporarily disabled around the migration workflow.
+def _migrate_studio_media():
+    """Ensure studio_media table has the new video columns if it already existed."""
+    try:
+        from sqlalchemy import text
+        with engine.begin() as conn:
+            columns = {
+                "duration": "FLOAT",
+                "fps": "FLOAT",
+                "source_media_id": "VARCHAR",
+                "generation_mode": "VARCHAR"
+            }
+            for col, col_type in columns.items():
+                try:
+                    conn.execute(text(f"ALTER TABLE studio_media ADD COLUMN {col} {col_type}"))
+                except Exception as e:
+                    # Column likely already exists or table doesn't exist yet
+                    pass
+    except Exception as e:
+        logger.debug(f"studio_media migration skipped/failed: {e}")
+
 def init_db():
     """
     Initialize the database by creating all tables.
@@ -2102,6 +2122,7 @@ def init_db():
     """
     _migrate_model_endpoints()
     Base.metadata.create_all(bind=engine)
+    _migrate_studio_media()
     # Lock the DB file (and any SQLite sidecars) to 0o600 — it holds bearer-token
     # + bcrypt hashes and encrypted provider keys. POSIX only; safe_chmod no-ops
     # on Windows (ACL-restricted profile dir) and the path helper returns None for
