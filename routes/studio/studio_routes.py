@@ -24,29 +24,12 @@ from routes.studio.studio_preprocess import (
 from routes.studio.studio_ffmpeg import (
     get_video_info, extract_last_frame, concatenate_videos, is_ffmpeg_available,
 )
+from src.s3_utils import upload_video_and_get_presigned_url
 import mimetypes
 
 os.makedirs(STUDIO_MEDIA_DIR, exist_ok=True)
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-async def _upload_video_temp(filepath: str) -> str:
-    """Upload a local video file to file.io and return the direct HTTPS download URL.
-    This is required because some OpenRouter video models (like Runway Aleph 2) strictly 
-    require a public HTTPS URL and reject base64 data URLs.
-    
-    file.io is used here because it is a "one-time download" service: as soon as
-    OpenRouter fetches the video, it is permanently deleted from the server."""
-    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-        with open(filepath, "rb") as f:
-            resp = await client.post("https://file.io/", files={"file": f})
-        resp.raise_for_status()
-        data = resp.json()
-        url = data.get("link")
-        if not url:
-            raise RuntimeError(f"Failed to upload video to file.io: {data}")
-        
-        return url
 
 STUDIO_VIDEO_EXTS = {"mp4", "mov", "webm", "mkv", "m4v"}
 
@@ -756,8 +739,9 @@ async def extend_video(request: Request, req: VideoExtendRequest):
                 )
 
             # Read source video and encode as base64 data URL
-            # Upload source video to temporary host for OpenRouter HTTPS requirement
-            video_url = await _upload_video_temp(source_path)
+            # Upload source video to user's private S3 bucket and generate a presigned HTTPS URL for OpenRouter
+            s3_object_name = f"studio_export_{os.path.basename(source_path)}"
+            video_url = await upload_video_and_get_presigned_url(source_path, s3_object_name)
 
             payload["input_video"] = {
                 "type": "video_url",
@@ -936,8 +920,9 @@ async def edit_video(request: Request, req: VideoEditRequest):
             "X-OpenRouter-Title": "Odysseus Studio",
         }
 
-        # 3. Build payload — upload source video to tmpfiles for OpenRouter HTTPS requirement
-        video_url = await _upload_video_temp(source_path)
+        # 3. Build payload — upload source video to S3 and generate Presigned URL
+        s3_object_name = f"studio_export_{os.path.basename(source_path)}"
+        video_url = await upload_video_and_get_presigned_url(source_path, s3_object_name)
 
         payload: Dict[str, Any] = {
             "model": target_model,

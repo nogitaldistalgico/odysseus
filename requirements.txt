@@ -54,3 +54,4 @@ pytest-asyncio
 # TestClient import when only classic httpx is present. Runtime code keeps
 # using `httpx` above; this is test-client only.
 httpx2
+boto3>=1.34.0
