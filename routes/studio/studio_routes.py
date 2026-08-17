@@ -747,6 +747,12 @@ async def extend_video(request: Request, req: VideoExtendRequest):
                 "type": "video_url",
                 "video_url": {"url": video_data_url},
             }
+            payload["input_references"] = [
+                {
+                    "type": "video_url",
+                    "video_url": {"url": video_data_url},
+                }
+            ]
             generation_mode = "extend_continuation"
             logger.info("Video extend: using real continuation for model %s", target_model)
         else:
@@ -927,6 +933,12 @@ async def edit_video(request: Request, req: VideoEditRequest):
                 "type": "video_url",
                 "video_url": {"url": video_data_url},
             },
+            "input_references": [
+                {
+                    "type": "video_url",
+                    "video_url": {"url": video_data_url},
+                }
+            ],
         }
         if req.aspect_ratio:
             payload["aspect_ratio"] = req.aspect_ratio
