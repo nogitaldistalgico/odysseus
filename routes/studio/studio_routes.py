@@ -31,19 +31,22 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 async def _upload_video_temp(filepath: str) -> str:
-    """Upload a local video file to tmpfiles.org and return the direct HTTPS download URL.
+    """Upload a local video file to file.io and return the direct HTTPS download URL.
     This is required because some OpenRouter video models (like Runway Aleph 2) strictly 
-    require a public HTTPS URL and reject base64 data URLs."""
+    require a public HTTPS URL and reject base64 data URLs.
+    
+    file.io is used here because it is a "one-time download" service: as soon as
+    OpenRouter fetches the video, it is permanently deleted from the server."""
     async with httpx.AsyncClient(timeout=120) as client:
         with open(filepath, "rb") as f:
-            resp = await client.post("https://tmpfiles.org/api/v1/upload", files={"file": f})
+            resp = await client.post("https://file.io", files={"file": f})
         resp.raise_for_status()
-        url = resp.json().get("data", {}).get("url")
+        data = resp.json()
+        url = data.get("link")
         if not url:
-            raise RuntimeError("Failed to upload video to temporary host")
+            raise RuntimeError(f"Failed to upload video to file.io: {data}")
         
-        # Convert to direct download link
-        return url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+        return url
 
 STUDIO_VIDEO_EXTS = {"mp4", "mov", "webm", "mkv", "m4v"}
 
