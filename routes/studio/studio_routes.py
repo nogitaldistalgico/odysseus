@@ -41,6 +41,7 @@ class PhotoGenRequest(BaseModel):
     base_media_id: Optional[str] = None
     character_ids: Optional[List[str]] = None
     character_prompt_suffix: Optional[str] = None
+    character_mapping_template: Optional[str] = None
     size: Optional[str] = None
     seed: Optional[int] = None
     steps: Optional[int] = None
@@ -52,6 +53,7 @@ class VideoGenRequest(BaseModel):
     base_media_id: Optional[str] = None
     character_ids: Optional[List[str]] = None
     character_prompt_suffix: Optional[str] = None
+    character_mapping_template: Optional[str] = None
     duration: Optional[int] = None
     resolution: Optional[str] = None
     aspect_ratio: Optional[str] = None
@@ -284,7 +286,7 @@ async def get_studio_media(request: Request, filename: str):
     finally:
         db.close()
 
-def _apply_character_references(prompt: str, character_ids: List[str], db, refs: List[Dict], suffix: Optional[str] = None) -> str:
+def _apply_character_references(prompt: str, character_ids: List[str], db, refs: List[Dict], suffix: Optional[str] = None, mapping_template: Optional[str] = None) -> str:
     """Replaces character names in the prompt with pseudonyms and appends their images to refs."""
     import re
     import string
@@ -325,7 +327,15 @@ def _apply_character_references(prompt: str, character_ids: List[str], db, refs:
         end_idx = len(refs)
         
         if start_idx <= end_idx:
-            meta_instructions.append(f"Character {pseudo} is depicted in reference images {start_idx} to {end_idx}. Ensure exact facial consistency.")
+            if mapping_template:
+                try:
+                    meta = mapping_template.format(pseudo=pseudo, start_idx=start_idx, end_idx=end_idx)
+                except Exception:
+                    # Fallback to default if the template format fails
+                    meta = f"Character {pseudo} is depicted in reference images {start_idx} to {end_idx}. Ensure exact facial consistency."
+            else:
+                meta = f"Character {pseudo} is depicted in reference images {start_idx} to {end_idx}. Ensure exact facial consistency."
+            meta_instructions.append(meta)
             
     if meta_instructions:
         prompt += "\n\n" + " ".join(meta_instructions)
@@ -390,7 +400,10 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
 
         prompt = req.prompt
         if req.character_ids:
-            prompt = _apply_character_references(prompt, req.character_ids, db, refs, req.character_prompt_suffix)
+            prompt = _apply_character_references(
+                prompt, req.character_ids, db, refs, 
+                req.character_prompt_suffix, req.character_mapping_template
+            )
             
         payload["prompt"] = prompt
         
@@ -516,7 +529,10 @@ async def generate_video(request: Request, req: VideoGenRequest):
         prompt = req.prompt
         if req.character_ids:
             # We pass refs by reference, so characters are appended to refs, but NOT to frame_imgs
-            prompt = _apply_character_references(prompt, req.character_ids, db, refs, req.character_prompt_suffix)
+            prompt = _apply_character_references(
+                prompt, req.character_ids, db, refs, 
+                req.character_prompt_suffix, req.character_mapping_template
+            )
             
         payload["prompt"] = prompt
 
