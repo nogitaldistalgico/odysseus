@@ -1282,3 +1282,72 @@ async def debug_video(request: Request):
         return result
     finally:
         db.close()
+
+@router.post("/api/studio/magic-prompt")
+async def generate_magic_prompt(request: Request, req: MagicPromptRequest):
+    user = require_studio_privilege(request)
+    db = SessionLocal()
+    try:
+        api_key = get_openrouter_api_key(db)
+        if not api_key:
+            raise HTTPException(400, "OpenRouter API key not configured. Add OpenRouter in Settings -> Models.")
+            
+        sys_prompt = req.system_prompt or "You are an expert prompt engineer for AI video and image generators. Enhance the user's short prompt into a highly detailed, descriptive prompt suitable for Midjourney or Sora. Output ONLY the enhanced prompt, nothing else."
+        
+        messages = [
+            {"role": "system", "content": sys_prompt}
+        ]
+        
+        user_content = [{"type": "text", "text": req.prompt}]
+        
+        if req.media_id:
+            path = _resolve_media_path(req.media_id)
+            mime_type, _ = mimetypes.guess_type(path)
+            if mime_type and mime_type.startswith("video"):
+                if is_ffmpeg_available():
+                    try:
+                        frame_bytes = await extract_last_frame(path)
+                        b64_str = base64.b64encode(frame_bytes).decode('utf-8')
+                        user_content.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{b64_str}"}
+                        })
+                    except Exception as e:
+                        logger.warning(f"Failed to extract frame for magic prompt: {e}")
+            else:
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": _get_base64_data_url(req.media_id)}
+                })
+                
+        messages.append({"role": "user", "content": user_content})
+        
+        payload = {
+            "model": req.model or "anthropic/claude-3.5-sonnet",
+            "messages": messages,
+            "max_tokens": 1000
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "https://github.com/pewdiepie-archdaemon/odysseus",
+            "X-OpenRouter-Title": "Odysseus Studio"
+        }
+        
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers)
+            if resp.status_code != 200:
+                raise HTTPException(500, f"OpenRouter API error: {resp.text}")
+                
+            data = resp.json()
+            enhanced = data["choices"][0]["message"]["content"].strip()
+            
+            return {"enhanced_prompt": enhanced}
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Magic prompt failed")
+        raise HTTPException(500, str(e))
+    finally:
+        db.close()
