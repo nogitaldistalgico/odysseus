@@ -26,7 +26,7 @@ def _get_s3_client():
         config=Config(signature_version='s3v4')
     )
 
-def _sync_upload_and_presign(filepath: str, object_name: str, expiration: int = 300) -> str:
+def _sync_upload_and_presign(filepath: str, object_name: str, expiration: int = 60) -> str:
     """Synchronously upload a file and generate a presigned URL."""
     bucket_name = os.environ.get("S3_BUCKET_NAME")
     if not bucket_name:
@@ -65,9 +65,9 @@ def _sync_upload_and_presign(filepath: str, object_name: str, expiration: int = 
 
     return response
 
-async def upload_video_and_get_presigned_url(filepath: str, object_name: str, expiration: int = 300) -> str:
+async def upload_video_and_get_presigned_url(filepath: str, object_name: str, expiration: int = 60) -> str:
     """
     Asynchronously upload a local video file to S3 and return a secure presigned HTTPS URL.
-    The URL expires after `expiration` seconds (default 5 mins).
+    The URL expires after `expiration` seconds (default 1 min).
     """
     return await asyncio.to_thread(_sync_upload_and_presign, filepath, object_name, expiration)
