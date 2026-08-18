@@ -1110,8 +1110,7 @@ async def create_character(req: CreateCharacterRequest, request: Request):
             id=char_id,
             owner_id=user_id,
             name=req.name,
-            images_json="[]",
-            created_at=time.time()
+            images_json="[]"
         )
         db.add(new_char)
         db.commit()
