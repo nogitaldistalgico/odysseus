@@ -33,12 +33,24 @@ logger = logging.getLogger(__name__)
 
 STUDIO_VIDEO_EXTS = {"mp4", "mov", "webm", "mkv", "m4v"}
 
+import enum
+
+class MediaReferenceRole(str, enum.Enum):
+    REFERENCE = "reference"
+    FIRST_FRAME = "first_frame"
+    LAST_FRAME = "last_frame"
+
+class MediaReference(BaseModel):
+    id: str
+    role: MediaReferenceRole = MediaReferenceRole.REFERENCE
+
 class PhotoGenRequest(BaseModel):
     prompt: str
     negative_prompt: Optional[str] = None
     model: Optional[str] = None
     aspect_ratio: Optional[str] = "16:9"
     base_media_id: Optional[str] = None
+    media_references: Optional[List[MediaReference]] = None
     character_ids: Optional[List[str]] = None
     character_prompt_suffix: Optional[str] = None
     character_mapping_template: Optional[str] = None
@@ -51,6 +63,7 @@ class VideoGenRequest(BaseModel):
     negative_prompt: Optional[str] = None
     model: Optional[str] = None
     base_media_id: Optional[str] = None
+    media_references: Optional[List[MediaReference]] = None
     character_ids: Optional[List[str]] = None
     character_prompt_suffix: Optional[str] = None
     character_mapping_template: Optional[str] = None
@@ -421,6 +434,7 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
         }
         
         refs = []
+        # Backward compatibility for base_media_id string
         if req.base_media_id:
             for m_id in req.base_media_id.split(","):
                 m_id = m_id.strip()
@@ -429,6 +443,18 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
                         "type": "image_url",
                         "image_url": {
                             "url": _get_base64_data_url(m_id)
+                        }
+                    })
+                    
+        # New structured references
+        if req.media_references:
+            for m_ref in req.media_references:
+                if m_ref.id:
+                    # For photos, all references are treated as input_references regardless of role
+                    refs.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": _get_base64_data_url(m_ref.id)
                         }
                     })
 
@@ -526,21 +552,20 @@ async def generate_video(request: Request, req: VideoGenRequest):
         
         refs = []
         frame_imgs = []
+        
+        # Backward compatibility: base_media_id forces idx=0 to first_frame and idx=1 to last_frame
         if req.base_media_id:
             for idx, m_id in enumerate(req.base_media_id.split(",")):
                 m_id = m_id.strip()
                 if m_id:
-                    # Preprocess: resize/crop the reference image to a
-                    # resolution the target model accepts.
                     url = _get_preprocessed_base64_data_url(m_id, constraints)
+                    # For legacy base_media_id, we always put it in refs as well
                     refs.append({
                         "type": "image_url",
                         "image_url": {
                             "url": url
                         }
                     })
-                    
-                    # For video models on OpenRouter, the first image is typically the first_frame
                     if idx == 0:
                         frame_imgs.append({
                             "type": "image_url",
@@ -550,13 +575,42 @@ async def generate_video(request: Request, req: VideoGenRequest):
                             "frame_type": "first_frame"
                         })
                     elif idx == 1:
-                        # If a second image is passed, assume it's the last_frame
                         frame_imgs.append({
                             "type": "image_url",
                             "image_url": {
                                 "url": url
                             },
                             "frame_type": "last_frame"
+                        })
+                        
+        # New structured references: Gives full control to the client over roles
+        if req.media_references:
+            for m_ref in req.media_references:
+                if m_ref.id:
+                    url = _get_preprocessed_base64_data_url(m_ref.id, constraints)
+                    if m_ref.role == MediaReferenceRole.FIRST_FRAME:
+                        frame_imgs.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": url
+                            },
+                            "frame_type": "first_frame"
+                        })
+                    elif m_ref.role == MediaReferenceRole.LAST_FRAME:
+                        frame_imgs.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": url
+                            },
+                            "frame_type": "last_frame"
+                        })
+                    else:
+                        # Default is REFERENCE, which goes into input_references
+                        refs.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": url
+                            }
                         })
 
 
