@@ -83,12 +83,20 @@ class VideoExtendRequest(BaseModel):
     use_real_continuation: bool = False
     concatenate: bool = True
     generate_audio: Optional[bool] = None
+    media_references: Optional[List[MediaReference]] = None
+    character_ids: Optional[List[str]] = None
+    character_prompt_suffix: Optional[str] = None
+    character_mapping_template: Optional[str] = None
 
 class VideoEditRequest(BaseModel):
     source_video_id: str
     prompt: str
     model: Optional[str] = None
     aspect_ratio: Optional[str] = None
+    media_references: Optional[List[MediaReference]] = None
+    character_ids: Optional[List[str]] = None
+    character_prompt_suffix: Optional[str] = None
+    character_mapping_template: Optional[str] = None
 
 class MagicPromptRequest(BaseModel):
     prompt: str
@@ -886,10 +894,28 @@ async def extend_video(request: Request, req: VideoExtendRequest):
             "X-OpenRouter-Title": "Odysseus Studio",
         }
 
+        refs = []
+        if req.media_references:
+            for m_ref in req.media_references:
+                # In extend mode, we only respect "reference" role since the video drives the timeline
+                if m_ref.id and m_ref.role == MediaReferenceRole.REFERENCE:
+                    url = _get_preprocessed_base64_data_url(m_ref.id, constraints)
+                    refs.append({
+                        "type": "image_url",
+                        "image_url": {"url": url}
+                    })
+
+        prompt = req.prompt
+        if req.character_ids:
+            prompt = _apply_character_references(
+                prompt, req.character_ids, db, refs,
+                req.character_prompt_suffix, req.character_mapping_template
+            )
+
         # 3. Build payload
         payload: Dict[str, Any] = {
             "model": target_model,
-            "prompt": req.prompt,
+            "prompt": prompt,
         }
         if req.duration is not None:
             payload["duration"] = req.duration
@@ -920,12 +946,13 @@ async def extend_video(request: Request, req: VideoExtendRequest):
                 "type": "video_url",
                 "video_url": {"url": video_url},
             }
+            # OpenRouter allows multiple references, including video + images
             payload["input_references"] = [
                 {
                     "type": "video_url",
                     "video_url": {"url": video_url},
                 }
-            ]
+            ] + refs
             generation_mode = "extend_continuation"
             logger.info("Video extend: using real continuation for model %s", target_model)
         else:
@@ -953,6 +980,8 @@ async def extend_video(request: Request, req: VideoExtendRequest):
             }]
             generation_mode = "extend_frame"
             logger.info("Video extend: using last-frame fallback for model %s", target_model)
+            if refs:
+                payload["input_references"] = refs
 
         # Validate payload params
         payload = validate_payload_params(payload, constraints)
@@ -1093,13 +1122,30 @@ async def edit_video(request: Request, req: VideoEditRequest):
             "X-OpenRouter-Title": "Odysseus Studio",
         }
 
+        refs = []
+        if req.media_references:
+            for m_ref in req.media_references:
+                if m_ref.id and m_ref.role == MediaReferenceRole.REFERENCE:
+                    url = _get_preprocessed_base64_data_url(m_ref.id, constraints)
+                    refs.append({
+                        "type": "image_url",
+                        "image_url": {"url": url}
+                    })
+
+        prompt = req.prompt
+        if req.character_ids:
+            prompt = _apply_character_references(
+                prompt, req.character_ids, db, refs,
+                req.character_prompt_suffix, req.character_mapping_template
+            )
+
         # 3. Build payload — upload source video to S3 and generate Presigned URL
         s3_object_name = f"studio_export_{os.path.basename(source_path)}"
         video_url = await upload_video_and_get_presigned_url(source_path, s3_object_name)
 
         payload: Dict[str, Any] = {
             "model": target_model,
-            "prompt": req.prompt,
+            "prompt": prompt,
             "input_video": {
                 "type": "video_url",
                 "video_url": {"url": video_url},
@@ -1109,7 +1155,7 @@ async def edit_video(request: Request, req: VideoEditRequest):
                     "type": "video_url",
                     "video_url": {"url": video_url},
                 }
-            ],
+            ] + refs,
         }
         if req.aspect_ratio:
             payload["aspect_ratio"] = req.aspect_ratio
