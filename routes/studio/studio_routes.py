@@ -136,6 +136,9 @@ async def get_studio_models():
     Video model entries include constraint metadata (supported_resolutions,
     supported_aspect_ratios, supported_sizes, supported_durations) so that
     clients can populate dropdowns with only valid values.
+    
+    Both photo and video entries include ``supports_character_reference``
+    derived from each model's ``architecture.input_modalities``.
     """
     global _studio_models_cache, _studio_models_cache_time
     
@@ -150,12 +153,25 @@ async def get_studio_models():
                 client.get("https://openrouter.ai/api/v1/videos/models"),
             )
             
+            # ----------------------------------------------------------
+            # Photo models — include architecture for character-ref flag
+            # ----------------------------------------------------------
             photos = []
             if img_resp.status_code == 200:
-                photos = [{"id": m["id"], "name": m.get("name", m["id"])} for m in img_resp.json().get("data", [])]
+                for m in img_resp.json().get("data", []):
+                    arch = m.get("architecture", {})
+                    input_mods = arch.get("input_modalities") or []
+                    entry = {
+                        "id": m["id"],
+                        "name": m.get("name", m["id"]),
+                        "supports_character_reference": "image" in input_mods,
+                    }
+                    photos.append(entry)
 
-            # Build a lookup of per-model constraints from the dedicated
-            # video-models endpoint (supported_sizes, resolutions, etc.).
+            # ----------------------------------------------------------
+            # Video constraints from the dedicated /videos/models endpoint
+            # (supported_sizes, resolutions, durations, frame_images, …)
+            # ----------------------------------------------------------
             constraints_by_id: Dict[str, Any] = {}
             if vid_constraints_resp.status_code == 200:
                 for m in vid_constraints_resp.json().get("data", []):
@@ -173,9 +189,16 @@ async def get_studio_models():
                             "allowed_passthrough_parameters": m.get("allowed_passthrough_parameters", []),
                         }
 
+            # ----------------------------------------------------------
+            # Video models — architecture comes from the general endpoint,
+            # constraints from /videos/models.
+            # ----------------------------------------------------------
             videos = []
             if vid_resp.status_code == 200:
                 for m in vid_resp.json().get("data", []):
+                    arch = m.get("architecture", {})
+                    input_mods = arch.get("input_modalities") or []
+                    
                     entry: Dict[str, Any] = {
                         "id": m["id"],
                         "name": m.get("name", m["id"]),
@@ -190,7 +213,9 @@ async def get_studio_models():
                         entry["supported_frame_images"] = c["supported_frame_images"]
                     entry["supports_continuation"] = supports_real_continuation(c)
                     entry["supports_video_editing"] = supports_video_editing(c)
-                    entry["supports_character_reference"] = supports_character_reference(c)
+                    # Character reference: use architecture from the GENERAL
+                    # endpoint (which has input_modalities), not from /videos/models.
+                    entry["supports_character_reference"] = "image" in input_mods
                     videos.append(entry)
                 
             _studio_models_cache = {
@@ -203,8 +228,8 @@ async def get_studio_models():
         logger.error(f"Failed to fetch studio models from OpenRouter: {e}")
         # Fallback to a minimal list if the API call fails
         return _studio_models_cache or {
-            "photo": [{"id": "google/gemini-3-pro-image", "name": "Google Nano Banana Pro (Gemini 3)"}],
-            "video": [{"id": "google/veo-2.0-pro", "name": "Google Veo 2.0 Pro"}]
+            "photo": [{"id": "google/gemini-3-pro-image", "name": "Google Nano Banana Pro (Gemini 3)", "supports_character_reference": True}],
+            "video": [{"id": "google/veo-2.0-pro", "name": "Google Veo 2.0 Pro", "supports_character_reference": True}]
         }
 
 
