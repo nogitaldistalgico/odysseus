@@ -1098,7 +1098,7 @@ class CreateCharacterRequest(BaseModel):
 
 @router.post("/api/studio/characters")
 async def create_character(req: CreateCharacterRequest, request: Request):
-    user_id = await require_studio_privilege(request)
+    user_id = require_studio_privilege(request)
     char_id = f"char_{uuid.uuid4().hex[:12]}"
     
     char_dir = os.path.join(STUDIO_CHARACTERS_DIR, char_id)
@@ -1126,7 +1126,7 @@ async def create_character(req: CreateCharacterRequest, request: Request):
 
 @router.get("/api/studio/characters")
 async def get_characters(request: Request):
-    user_id = await require_studio_privilege(request)
+    user_id = require_studio_privilege(request)
     db = SessionLocal()
     try:
         chars = db.query(StudioCharacter).filter(StudioCharacter.owner_id == user_id).all()
@@ -1145,7 +1145,7 @@ async def get_characters(request: Request):
 
 @router.post("/api/studio/characters/{char_id}/images")
 async def upload_character_image(char_id: str, request: Request, file: UploadFile = File(...)):
-    user_id = await require_studio_privilege(request)
+    user_id = require_studio_privilege(request)
     db = SessionLocal()
     try:
         char = db.query(StudioCharacter).filter(
@@ -1180,7 +1180,7 @@ async def upload_character_image(char_id: str, request: Request, file: UploadFil
 
 @router.delete("/api/studio/characters/{char_id}/images/{filename}")
 async def delete_character_image(char_id: str, filename: str, request: Request):
-    user_id = await require_studio_privilege(request)
+    user_id = require_studio_privilege(request)
     db = SessionLocal()
     try:
         char = db.query(StudioCharacter).filter(
@@ -1207,7 +1207,7 @@ async def delete_character_image(char_id: str, filename: str, request: Request):
 
 @router.delete("/api/studio/characters/{char_id}")
 async def delete_character(char_id: str, request: Request):
-    user_id = await require_studio_privilege(request)
+    user_id = require_studio_privilege(request)
     db = SessionLocal()
     try:
         char = db.query(StudioCharacter).filter(
@@ -1232,7 +1232,7 @@ async def delete_character(char_id: str, request: Request):
 @router.get("/api/studio/characters/{char_id}/images/{filename}")
 async def get_character_image(char_id: str, filename: str, request: Request):
     """Serve a character image directly."""
-    user_id = await require_studio_privilege(request)
+    user_id = require_studio_privilege(request)
     filepath = os.path.join(STUDIO_CHARACTERS_DIR, char_id, filename)
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Image not found")
