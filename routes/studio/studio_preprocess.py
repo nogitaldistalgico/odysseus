@@ -398,19 +398,30 @@ def supports_video_editing(constraints: Dict[str, Any]) -> bool:
 def supports_character_reference(constraints: Dict[str, Any]) -> bool:
     """Return *True* if the model supports character reference via multiple images.
     
-    Detection heuristic: We check if the model name contains known multi-reference 
-    series like 'flux', 'seedance', 'kling', or 'gemini', or if the description
-    mentions character reference or multiple inputs.
+    Detection heuristic: Any model that accepts images as input can theoretically 
+    support character reference via injected reference images. We also check known
+    series and keywords as a fallback.
     """
+    arch = constraints.get("architecture", {})
+    input_mods = arch.get("input_modalities") or []
+    if "image" in input_mods:
+        return True
+        
+    modality = str(arch.get("modality", "")).lower()
+    if "->" in modality:
+        inputs = modality.split("->")[0]
+        if "image" in inputs:
+            return True
+
     model_id = str(constraints.get("id", "")).lower()
     desc = str(constraints.get("description", "")).lower()
     
-    # Known OpenRouter series that support input_references arrays
-    known_series = ["flux", "seedance", "kling", "gemini"]
+    # Known OpenRouter series that support input_references or image prompts
+    known_series = ["flux", "seedance", "kling", "gemini", "runway", "luma", "midjourney", "minmax", "haiper"]
     if any(s in model_id for s in known_series):
         return True
         
-    keywords = ["character reference", "multiple reference", "identity preservation"]
+    keywords = ["character reference", "multiple reference", "identity preservation", "image input", "image-to-video", "image-to-image"]
     if any(kw in desc for kw in keywords):
         return True
         

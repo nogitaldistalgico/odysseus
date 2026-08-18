@@ -241,7 +241,7 @@ async def get_model_constraints_endpoint(model_id: str):
     }
 
 @router.get("/api/studio/library")
-async def studio_library(
+def studio_library(
     request: Request,
     offset: int = Query(0, ge=0),
     limit: int = Query(24, ge=1, le=100),
@@ -271,7 +271,7 @@ async def studio_library(
         db.close()
 
 @router.get("/api/studio/media/{filename}")
-async def get_studio_media(request: Request, filename: str):
+def get_studio_media(request: Request, filename: str):
     user = effective_user(request)
     db = SessionLocal()
     try:
@@ -1124,7 +1124,7 @@ async def create_character(req: CreateCharacterRequest, request: Request):
         db.close()
 
 @router.get("/api/studio/characters")
-async def get_characters(request: Request):
+def get_characters(request: Request):
     user_id = require_studio_privilege(request)
     db = SessionLocal()
     try:
@@ -1229,7 +1229,7 @@ async def delete_character(char_id: str, request: Request):
         db.close()
 
 @router.get("/api/studio/characters/{char_id}/images/{filename}")
-async def get_character_image(char_id: str, filename: str, request: Request):
+def get_character_image(char_id: str, filename: str, request: Request):
     """Serve a character image directly."""
     user_id = require_studio_privilege(request)
     filepath = os.path.join(STUDIO_CHARACTERS_DIR, char_id, filename)
