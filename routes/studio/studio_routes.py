@@ -22,7 +22,7 @@ from routes.studio.studio_preprocess import (
     supports_real_continuation, supports_video_editing,
 )
 from routes.studio.studio_ffmpeg import (
-    get_video_info, extract_last_frame, concatenate_videos, is_ffmpeg_available,
+    get_video_info, extract_last_frame, extract_frame_at, concatenate_videos, is_ffmpeg_available,
 )
 from src.s3_utils import upload_video_and_get_presigned_url
 import mimetypes
@@ -70,6 +70,12 @@ class VideoEditRequest(BaseModel):
     prompt: str
     model: Optional[str] = None
     aspect_ratio: Optional[str] = None
+
+class MagicPromptRequest(BaseModel):
+    prompt: str
+    media_id: Optional[str] = None
+    model: Optional[str] = "anthropic/claude-3.5-sonnet"
+    system_prompt: Optional[str] = None
 
 def _resolve_media_path(file_id: str) -> str:
     """Resolve a media file ID to its absolute path on disk."""
