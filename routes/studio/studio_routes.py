@@ -72,6 +72,7 @@ class VideoGenRequest(BaseModel):
     aspect_ratio: Optional[str] = None
     size: Optional[str] = None
     generate_audio: Optional[bool] = None
+    upload_method: str = "s3"
 
 class VideoExtendRequest(BaseModel):
     source_video_id: str
@@ -87,6 +88,7 @@ class VideoExtendRequest(BaseModel):
     character_ids: Optional[List[str]] = None
     character_prompt_suffix: Optional[str] = None
     character_mapping_template: Optional[str] = None
+    upload_method: str = "s3"
 
 class VideoEditRequest(BaseModel):
     source_video_id: str
@@ -97,6 +99,7 @@ class VideoEditRequest(BaseModel):
     character_ids: Optional[List[str]] = None
     character_prompt_suffix: Optional[str] = None
     character_mapping_template: Optional[str] = None
+    upload_method: str = "s3"
 
 class MagicPromptRequest(BaseModel):
     prompt: str
@@ -699,7 +702,10 @@ async def generate_video(request: Request, req: VideoGenRequest):
                         })
                     else:
                         # Default is REFERENCE, which goes into input_references via S3
-                        url = await _get_preprocessed_s3_url(m_ref.id, constraints, expiration=300)
+                        if req.upload_method == "s3":
+                            url = await _get_preprocessed_s3_url(m_ref.id, constraints, expiration=300)
+                        else:
+                            url = _get_preprocessed_base64_data_url(m_ref.id, constraints)
                         refs.append({
                             "type": "image_url",
                             "image_url": {
@@ -713,7 +719,7 @@ async def generate_video(request: Request, req: VideoGenRequest):
             # We pass refs by reference, so characters are appended to refs, but NOT to frame_imgs
             prompt = await _apply_character_references(
                 prompt, req.character_ids, db, refs, 
-                req.character_prompt_suffix, req.character_mapping_template, use_s3=True
+                req.character_prompt_suffix, req.character_mapping_template, use_s3=(req.upload_method == "s3")
             )
             
         payload["prompt"] = prompt
@@ -995,7 +1001,7 @@ async def extend_video(request: Request, req: VideoExtendRequest):
         if req.character_ids:
             prompt = await _apply_character_references(
                 prompt, req.character_ids, db, refs,
-                req.character_prompt_suffix, req.character_mapping_template, use_s3=True
+                req.character_prompt_suffix, req.character_mapping_template, use_s3=(req.upload_method == "s3")
             )
 
         # 3. Build payload
@@ -1222,7 +1228,7 @@ async def edit_video(request: Request, req: VideoEditRequest):
         if req.character_ids:
             prompt = await _apply_character_references(
                 prompt, req.character_ids, db, refs,
-                req.character_prompt_suffix, req.character_mapping_template, use_s3=True
+                req.character_prompt_suffix, req.character_mapping_template, use_s3=(req.upload_method == "s3")
             )
 
         # 3. Build payload — upload source video to S3 and generate Presigned URL
