@@ -168,32 +168,58 @@ async def get_studio_models():
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            img_resp, vid_resp, vid_constraints_resp = await asyncio.gather(
+            img_resp, vid_resp, vid_constraints_resp, img_constraints_resp = await asyncio.gather(
                 client.get("https://openrouter.ai/api/v1/models?output_modalities=image"),
                 client.get("https://openrouter.ai/api/v1/models?output_modalities=video"),
                 client.get("https://openrouter.ai/api/v1/videos/models"),
+                client.get("https://openrouter.ai/api/v1/images/models"),
             )
             
             if img_resp.status_code != 200 or vid_resp.status_code != 200:
                 raise Exception(f"OpenRouter returned non-200 status: img={img_resp.status_code}, vid={vid_resp.status_code}")
 
+            # Parse Image Constraints
+            img_constraints_by_id: Dict[str, Any] = {}
+            if img_constraints_resp.status_code == 200:
+                for m in img_constraints_resp.json().get("data", []):
+                    mid = m.get("id")
+                    if mid:
+                        img_constraints_by_id[mid] = m.get("supported_parameters", {})
+
             # ----------------------------------------------------------
-            # Photo models — include architecture for character-ref flag
+            # Photo models — parse exact capabilities
             # ----------------------------------------------------------
             photos = []
             for m in img_resp.json().get("data", []):
+                mid = m["id"]
+                c = img_constraints_by_id.get(mid, {})
+                
+                # Default to fallback heuristic if exact constraints not found
                 arch = m.get("architecture", {})
                 input_mods = arch.get("input_modalities") or []
+                fallback_supports_image = "image" in input_mods
+                
+                # Check for input_references in supported_parameters
+                input_refs = c.get("input_references", {})
+                max_refs = input_refs.get("max")
+                
+                if max_refs is not None:
+                    supports_character = max_refs > 0
+                else:
+                    supports_character = fallback_supports_image
+                    max_refs = 1 if fallback_supports_image else 0
+                
                 entry = {
-                    "id": m["id"],
-                    "name": m.get("name", m["id"]),
-                    "supports_character_reference": "image" in input_mods,
+                    "id": mid,
+                    "name": m.get("name", mid),
+                    "supports_character_reference": supports_character,
+                    "max_image_references": max_refs,
+                    "supports_seed": "seed" in c,
                 }
                 photos.append(entry)
 
             # ----------------------------------------------------------
             # Video constraints from the dedicated /videos/models endpoint
-            # (supported_sizes, resolutions, durations, frame_images, …)
             # ----------------------------------------------------------
             constraints_by_id: Dict[str, Any] = {}
             if vid_constraints_resp.status_code == 200:
@@ -206,6 +232,8 @@ async def get_studio_models():
                             "supported_sizes": m.get("supported_sizes", []),
                             "supported_durations": m.get("supported_durations", []),
                             "supported_frame_images": m.get("supported_frame_images"),
+                            "generate_audio": m.get("generate_audio", False),
+                            "seed": m.get("seed", False),
                             "pricing_skus": m.get("pricing_skus", {}),
                             "description": m.get("description", ""),
                             "supported_parameters": m.get("supported_parameters", []),
@@ -213,8 +241,7 @@ async def get_studio_models():
                         }
 
             # ----------------------------------------------------------
-            # Video models — architecture comes from the general endpoint,
-            # constraints from /videos/models.
+            # Video models
             # ----------------------------------------------------------
             videos = []
             for m in vid_resp.json().get("data", []):
@@ -231,13 +258,21 @@ async def get_studio_models():
                 entry["supported_aspect_ratios"] = c.get("supported_aspect_ratios", [])
                 entry["supported_sizes"] = c.get("supported_sizes", [])
                 entry["supported_durations"] = c.get("supported_durations", [])
+                
                 if "supported_frame_images" in c:
                     entry["supported_frame_images"] = c["supported_frame_images"]
+                    
+                entry["supports_audio"] = c.get("generate_audio")
+                entry["supports_seed"] = c.get("seed")
+                
                 entry["supports_continuation"] = supports_real_continuation(c)
                 entry["supports_video_editing"] = supports_video_editing(c)
-                # Character reference: use architecture from the GENERAL
-                # endpoint (which has input_modalities), not from /videos/models.
+                
+                # Character reference:
                 entry["supports_character_reference"] = "image" in input_mods
+                # If it supports character reference, we allow multiple by default unless OpenRouter starts supplying max for videos
+                entry["max_image_references"] = 10 if entry["supports_character_reference"] else 0
+                
                 videos.append(entry)
                 
             _studio_models_cache = {
