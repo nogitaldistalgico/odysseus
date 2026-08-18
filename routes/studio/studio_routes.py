@@ -153,20 +153,22 @@ async def get_studio_models():
                 client.get("https://openrouter.ai/api/v1/videos/models"),
             )
             
+            if img_resp.status_code != 200 or vid_resp.status_code != 200:
+                raise Exception(f"OpenRouter returned non-200 status: img={img_resp.status_code}, vid={vid_resp.status_code}")
+
             # ----------------------------------------------------------
             # Photo models — include architecture for character-ref flag
             # ----------------------------------------------------------
             photos = []
-            if img_resp.status_code == 200:
-                for m in img_resp.json().get("data", []):
-                    arch = m.get("architecture", {})
-                    input_mods = arch.get("input_modalities") or []
-                    entry = {
-                        "id": m["id"],
-                        "name": m.get("name", m["id"]),
-                        "supports_character_reference": "image" in input_mods,
-                    }
-                    photos.append(entry)
+            for m in img_resp.json().get("data", []):
+                arch = m.get("architecture", {})
+                input_mods = arch.get("input_modalities") or []
+                entry = {
+                    "id": m["id"],
+                    "name": m.get("name", m["id"]),
+                    "supports_character_reference": "image" in input_mods,
+                }
+                photos.append(entry)
 
             # ----------------------------------------------------------
             # Video constraints from the dedicated /videos/models endpoint
@@ -194,29 +196,28 @@ async def get_studio_models():
             # constraints from /videos/models.
             # ----------------------------------------------------------
             videos = []
-            if vid_resp.status_code == 200:
-                for m in vid_resp.json().get("data", []):
-                    arch = m.get("architecture", {})
-                    input_mods = arch.get("input_modalities") or []
-                    
-                    entry: Dict[str, Any] = {
-                        "id": m["id"],
-                        "name": m.get("name", m["id"]),
-                    }
-                    # Merge constraints if available
-                    c = constraints_by_id.get(m["id"], {})
-                    entry["supported_resolutions"] = c.get("supported_resolutions", [])
-                    entry["supported_aspect_ratios"] = c.get("supported_aspect_ratios", [])
-                    entry["supported_sizes"] = c.get("supported_sizes", [])
-                    entry["supported_durations"] = c.get("supported_durations", [])
-                    if "supported_frame_images" in c:
-                        entry["supported_frame_images"] = c["supported_frame_images"]
-                    entry["supports_continuation"] = supports_real_continuation(c)
-                    entry["supports_video_editing"] = supports_video_editing(c)
-                    # Character reference: use architecture from the GENERAL
-                    # endpoint (which has input_modalities), not from /videos/models.
-                    entry["supports_character_reference"] = "image" in input_mods
-                    videos.append(entry)
+            for m in vid_resp.json().get("data", []):
+                arch = m.get("architecture", {})
+                input_mods = arch.get("input_modalities") or []
+                
+                entry: Dict[str, Any] = {
+                    "id": m["id"],
+                    "name": m.get("name", m["id"]),
+                }
+                # Merge constraints if available
+                c = constraints_by_id.get(m["id"], {})
+                entry["supported_resolutions"] = c.get("supported_resolutions", [])
+                entry["supported_aspect_ratios"] = c.get("supported_aspect_ratios", [])
+                entry["supported_sizes"] = c.get("supported_sizes", [])
+                entry["supported_durations"] = c.get("supported_durations", [])
+                if "supported_frame_images" in c:
+                    entry["supported_frame_images"] = c["supported_frame_images"]
+                entry["supports_continuation"] = supports_real_continuation(c)
+                entry["supports_video_editing"] = supports_video_editing(c)
+                # Character reference: use architecture from the GENERAL
+                # endpoint (which has input_modalities), not from /videos/models.
+                entry["supports_character_reference"] = "image" in input_mods
+                videos.append(entry)
                 
             _studio_models_cache = {
                 "photo": photos,
@@ -229,7 +230,7 @@ async def get_studio_models():
         # Fallback to a minimal list if the API call fails
         return _studio_models_cache or {
             "photo": [{"id": "google/gemini-3-pro-image", "name": "Google Nano Banana Pro (Gemini 3)", "supports_character_reference": True}],
-            "video": [{"id": "google/veo-2.0-pro", "name": "Google Veo 2.0 Pro", "supports_character_reference": True}]
+            "video": [{"id": "google/veo-3.1", "name": "Google Veo 3.1", "supports_character_reference": True}]
         }
 
 
