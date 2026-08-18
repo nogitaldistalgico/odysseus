@@ -319,10 +319,18 @@ def validate_payload_params(
     if "supported_frame_images" in constraints:
         sup_frame_imgs = constraints["supported_frame_images"]
         if sup_frame_imgs is not None:
-            # Model explicitly supports frame_images. Remove input_references.
-            if "input_references" in payload:
-                logger.info("Model supports frame_images; removing input_references.")
-                del payload["input_references"]
+            # Model explicitly supports frame_images.
+            # Check if it ALSO supports soft references (character consistency etc.)
+            desc = str(constraints.get("description", "")).lower()
+            supports_soft = any(kw in desc for kw in [
+                "reference-to-video", "reference-based", "reference images", 
+                "reference-conditioned", "character consistency"
+            ])
+            if not supports_soft:
+                # Remove input_references only if it strictly doesn't support them.
+                if "input_references" in payload:
+                    logger.info("Model supports frame_images but not soft refs; removing input_references.")
+                    del payload["input_references"]
         else:
             # Model does not specify frame_images support. Remove frame_images.
             if "frame_images" in payload:
