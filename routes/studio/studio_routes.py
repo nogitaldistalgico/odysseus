@@ -144,6 +144,33 @@ def _get_preprocessed_base64_data_url(file_id: str, model_constraints: dict) -> 
     b64_str = base64.b64encode(processed).decode("utf-8")
     return f"data:{mime};base64,{b64_str}"
 
+async def _get_s3_url(file_id: str, expiration: int = 300) -> str:
+    from src.s3_utils import upload_video_and_get_presigned_url
+    path = _resolve_media_path(file_id)
+    object_name = f"studio_refs/{file_id}"
+    return await upload_video_and_get_presigned_url(path, object_name, expiration)
+
+async def _get_preprocessed_s3_url(file_id: str, model_constraints: dict, expiration: int = 300) -> str:
+    import tempfile
+    from src.s3_utils import upload_video_and_get_presigned_url
+    path = _resolve_media_path(file_id)
+    with open(path, "rb") as f:
+        raw_bytes = f.read()
+
+    processed = preprocess_reference_image(raw_bytes, model_constraints)
+    
+    ext = ".png" if processed is not raw_bytes else os.path.splitext(path)[1]
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        tmp.write(processed)
+        tmp_path = tmp.name
+
+    object_name = f"studio_refs/{file_id}_preprocessed{ext}"
+    try:
+        url = await upload_video_and_get_presigned_url(tmp_path, object_name, expiration)
+    finally:
+        os.remove(tmp_path)
+    return url
+
 import time
 
 _studio_models_cache = None
@@ -215,6 +242,7 @@ async def get_studio_models():
                     "supports_character_reference": supports_character,
                     "max_image_references": max_refs,
                     "supports_seed": "seed" in c,
+                    "pricing": m.get("pricing", {}),
                 }
                 photos.append(entry)
 
@@ -267,10 +295,11 @@ async def get_studio_models():
                 
                 entry["supports_continuation"] = supports_real_continuation(c)
                 entry["supports_video_editing"] = supports_video_editing(c)
+                entry["pricing"] = c.get("pricing_skus", {})
                 
                 # Character reference:
                 entry["supports_character_reference"] = "image" in input_mods
-                # If it supports character reference, we allow multiple by default unless OpenRouter starts supplying max for videos
+                # Default to 10 if not provided but image input is supported
                 entry["max_image_references"] = 10 if entry["supports_character_reference"] else 0
                 
                 videos.append(entry)
@@ -368,7 +397,7 @@ def get_studio_media(request: Request, filename: str):
     finally:
         db.close()
 
-def _apply_character_references(prompt: str, character_ids: List[str], db, refs: List[Dict], suffix: Optional[str] = None, mapping_template: Optional[str] = None) -> str:
+async def _apply_character_references(prompt: str, character_ids: List[str], db, refs: List[Dict], suffix: Optional[str] = None, mapping_template: Optional[str] = None, use_s3: bool = False) -> str:
     """Replaces character names in the prompt with pseudonyms and appends their images to refs."""
     import re
     import string
@@ -400,18 +429,30 @@ def _apply_character_references(prompt: str, character_ids: List[str], db, refs:
                 
                 # Downscale character images to prevent massive JSON payloads that cause timeouts
                 processed_bytes = preprocess_reference_image(raw_bytes, {})
-                b64_data = base64.b64encode(processed_bytes).decode('utf-8')
                 
-                # preprocess_reference_image always returns PNG if it successfully processes,
-                # but we'll use the original mime type just in case it returned raw bytes.
-                mime_type, _ = mimetypes.guess_type(filepath)
-                if not mime_type:
-                    mime_type = "image/png"
+                if use_s3:
+                    import tempfile
+                    from src.s3_utils import upload_video_and_get_presigned_url
+                    ext = ".png" if processed_bytes is not raw_bytes else os.path.splitext(filepath)[1]
+                    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                        tmp.write(processed_bytes)
+                        tmp_path = tmp.name
+                    object_name = f"studio_chars/{char.id}_{img_filename}_preprocessed{ext}"
+                    try:
+                        url = await upload_video_and_get_presigned_url(tmp_path, object_name, expiration=300)
+                    finally:
+                        os.remove(tmp_path)
+                else:
+                    b64_data = base64.b64encode(processed_bytes).decode('utf-8')
+                    mime_type, _ = mimetypes.guess_type(filepath)
+                    if not mime_type:
+                        mime_type = "image/png"
+                    url = f"data:{mime_type};base64,{b64_data}"
                     
                 refs.append({
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:{mime_type};base64,{b64_data}"
+                        "url": url
                     }
                 })
         end_idx = len(refs)
@@ -503,7 +544,7 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
 
         prompt = req.prompt
         if req.character_ids:
-            prompt = _apply_character_references(
+            prompt = await _apply_character_references(
                 prompt, req.character_ids, db, refs, 
                 req.character_prompt_suffix, req.character_mapping_template
             )
@@ -630,8 +671,8 @@ async def generate_video(request: Request, req: VideoGenRequest):
         if req.media_references:
             for m_ref in req.media_references:
                 if m_ref.id:
-                    url = _get_preprocessed_base64_data_url(m_ref.id, constraints)
                     if m_ref.role == MediaReferenceRole.FIRST_FRAME:
+                        url = _get_preprocessed_base64_data_url(m_ref.id, constraints)
                         frame_imgs.append({
                             "type": "image_url",
                             "image_url": {
@@ -640,6 +681,7 @@ async def generate_video(request: Request, req: VideoGenRequest):
                             "frame_type": "first_frame"
                         })
                     elif m_ref.role == MediaReferenceRole.LAST_FRAME:
+                        url = _get_preprocessed_base64_data_url(m_ref.id, constraints)
                         frame_imgs.append({
                             "type": "image_url",
                             "image_url": {
@@ -648,7 +690,8 @@ async def generate_video(request: Request, req: VideoGenRequest):
                             "frame_type": "last_frame"
                         })
                     else:
-                        # Default is REFERENCE, which goes into input_references
+                        # Default is REFERENCE, which goes into input_references via S3
+                        url = await _get_preprocessed_s3_url(m_ref.id, constraints, expiration=300)
                         refs.append({
                             "type": "image_url",
                             "image_url": {
@@ -660,9 +703,9 @@ async def generate_video(request: Request, req: VideoGenRequest):
         prompt = req.prompt
         if req.character_ids:
             # We pass refs by reference, so characters are appended to refs, but NOT to frame_imgs
-            prompt = _apply_character_references(
+            prompt = await _apply_character_references(
                 prompt, req.character_ids, db, refs, 
-                req.character_prompt_suffix, req.character_mapping_template
+                req.character_prompt_suffix, req.character_mapping_template, use_s3=True
             )
             
         payload["prompt"] = prompt
@@ -934,7 +977,7 @@ async def extend_video(request: Request, req: VideoExtendRequest):
             for m_ref in req.media_references:
                 # In extend mode, we only respect "reference" role since the video drives the timeline
                 if m_ref.id and m_ref.role == MediaReferenceRole.REFERENCE:
-                    url = _get_preprocessed_base64_data_url(m_ref.id, constraints)
+                    url = await _get_preprocessed_s3_url(m_ref.id, constraints, expiration=300)
                     refs.append({
                         "type": "image_url",
                         "image_url": {"url": url}
@@ -942,9 +985,9 @@ async def extend_video(request: Request, req: VideoExtendRequest):
 
         prompt = req.prompt
         if req.character_ids:
-            prompt = _apply_character_references(
+            prompt = await _apply_character_references(
                 prompt, req.character_ids, db, refs,
-                req.character_prompt_suffix, req.character_mapping_template
+                req.character_prompt_suffix, req.character_mapping_template, use_s3=True
             )
 
         # 3. Build payload
@@ -1161,7 +1204,7 @@ async def edit_video(request: Request, req: VideoEditRequest):
         if req.media_references:
             for m_ref in req.media_references:
                 if m_ref.id and m_ref.role == MediaReferenceRole.REFERENCE:
-                    url = _get_preprocessed_base64_data_url(m_ref.id, constraints)
+                    url = await _get_preprocessed_s3_url(m_ref.id, constraints, expiration=300)
                     refs.append({
                         "type": "image_url",
                         "image_url": {"url": url}
@@ -1169,9 +1212,9 @@ async def edit_video(request: Request, req: VideoEditRequest):
 
         prompt = req.prompt
         if req.character_ids:
-            prompt = _apply_character_references(
+            prompt = await _apply_character_references(
                 prompt, req.character_ids, db, refs,
-                req.character_prompt_suffix, req.character_mapping_template
+                req.character_prompt_suffix, req.character_mapping_template, use_s3=True
             )
 
         # 3. Build payload — upload source video to S3 and generate Presigned URL

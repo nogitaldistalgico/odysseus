@@ -141,7 +141,13 @@ def find_best_size(
             candidates.append(parsed)
 
     if not candidates:
-        # Universal fallback: round to nearest multiple of 64
+        # Universal fallback: round to nearest multiple of 64, but cap at ~1024 
+        # to prevent sending massive base64 payloads to OpenRouter.
+        max_dim = 1024
+        if img_width > max_dim or img_height > max_dim:
+            scale = max_dim / max(img_width, img_height)
+            img_width = int(img_width * scale)
+            img_height = int(img_height * scale)
         return _round_to_multiple(img_width), _round_to_multiple(img_height)
 
     src_ratio = img_width / max(img_height, 1)
