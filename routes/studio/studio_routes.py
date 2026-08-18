@@ -339,10 +339,18 @@ def _apply_character_references(prompt: str, character_ids: List[str], db, refs:
             filepath = os.path.join(STUDIO_CHARACTERS_DIR, char.id, img_filename)
             if os.path.exists(filepath):
                 with open(filepath, "rb") as f:
-                    b64_data = base64.b64encode(f.read()).decode('utf-8')
+                    raw_bytes = f.read()
+                
+                # Downscale character images to prevent massive JSON payloads that cause timeouts
+                processed_bytes = preprocess_reference_image(raw_bytes, {})
+                b64_data = base64.b64encode(processed_bytes).decode('utf-8')
+                
+                # preprocess_reference_image always returns PNG if it successfully processes,
+                # but we'll use the original mime type just in case it returned raw bytes.
                 mime_type, _ = mimetypes.guess_type(filepath)
                 if not mime_type:
-                    mime_type = "image/jpeg"
+                    mime_type = "image/png"
+                    
                 refs.append({
                     "type": "image_url",
                     "image_url": {
