@@ -297,8 +297,16 @@ async def get_studio_models():
                 entry["supports_video_editing"] = supports_video_editing(c)
                 entry["pricing"] = c.get("pricing_skus", {})
                 
-                # Character reference:
-                entry["supports_character_reference"] = "image" in input_mods
+                # Character reference / Soft reference:
+                desc = str(c.get("description", "")).lower()
+                supports_soft = any(kw in desc for kw in [
+                    "reference-to-video", "reference-based", "reference images", 
+                    "reference-conditioned", "character consistency"
+                ])
+                # If OpenRouter gives us a specific flag in the future, we'd use it here.
+                # For now, we strictly look for reference capabilities in the description,
+                # to distinguish them from models that ONLY support first_frame.
+                entry["supports_character_reference"] = supports_soft
                 # Default to 10 if not provided but image input is supported
                 entry["max_image_references"] = 10 if entry["supports_character_reference"] else 0
                 
