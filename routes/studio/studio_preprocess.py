@@ -394,3 +394,24 @@ def supports_video_editing(constraints: Dict[str, Any]) -> bool:
             return True
             
     return False
+
+def supports_character_reference(constraints: Dict[str, Any]) -> bool:
+    """Return *True* if the model supports character reference via multiple images.
+    
+    Detection heuristic: We check if the model name contains known multi-reference 
+    series like 'flux', 'seedance', 'kling', or 'gemini', or if the description
+    mentions character reference or multiple inputs.
+    """
+    model_id = str(constraints.get("id", "")).lower()
+    desc = str(constraints.get("description", "")).lower()
+    
+    # Known OpenRouter series that support input_references arrays
+    known_series = ["flux", "seedance", "kling", "gemini"]
+    if any(s in model_id for s in known_series):
+        return True
+        
+    keywords = ["character reference", "multiple reference", "identity preservation"]
+    if any(kw in desc for kw in keywords):
+        return True
+        
+    return False

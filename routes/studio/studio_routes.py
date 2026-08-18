@@ -11,15 +11,15 @@ from fastapi import APIRouter, Request, HTTPException, Query, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from core.database import SessionLocal, StudioMedia
+from core.database import SessionLocal, StudioMedia, StudioCharacter
 from src.auth_helpers import get_current_user, effective_user
-from src.constants import STUDIO_MEDIA_DIR, UPLOAD_DIR
+from src.constants import STUDIO_MEDIA_DIR, STUDIO_CHARACTERS_DIR, UPLOAD_DIR
 from src.settings import load_settings, get_user_setting
 from src.upload_limits import STUDIO_UPLOAD_MAX_BYTES, read_upload_limited
 from routes.studio.studio_helpers import _owner_filter, _media_to_dict, get_openrouter_api_key, require_studio_privilege
 from routes.studio.studio_preprocess import (
     get_model_constraints, preprocess_reference_image, validate_payload_params,
-    supports_real_continuation, supports_video_editing,
+    supports_real_continuation, supports_video_editing, supports_character_reference,
 )
 from routes.studio.studio_ffmpeg import (
     get_video_info, extract_last_frame, extract_frame_at, concatenate_videos, is_ffmpeg_available,
@@ -39,6 +39,8 @@ class PhotoGenRequest(BaseModel):
     model: Optional[str] = None
     aspect_ratio: Optional[str] = "16:9"
     base_media_id: Optional[str] = None
+    character_ids: Optional[List[str]] = None
+    character_prompt_suffix: Optional[str] = None
     size: Optional[str] = None
     seed: Optional[int] = None
     steps: Optional[int] = None
@@ -48,6 +50,8 @@ class VideoGenRequest(BaseModel):
     negative_prompt: Optional[str] = None
     model: Optional[str] = None
     base_media_id: Optional[str] = None
+    character_ids: Optional[List[str]] = None
+    character_prompt_suffix: Optional[str] = None
     duration: Optional[int] = None
     resolution: Optional[str] = None
     aspect_ratio: Optional[str] = None
@@ -184,6 +188,7 @@ async def get_studio_models():
                         entry["supported_frame_images"] = c["supported_frame_images"]
                     entry["supports_continuation"] = supports_real_continuation(c)
                     entry["supports_video_editing"] = supports_video_editing(c)
+                    entry["supports_character_reference"] = supports_character_reference(c)
                     videos.append(entry)
                 
             _studio_models_cache = {
@@ -230,6 +235,7 @@ async def get_model_constraints_endpoint(model_id: str):
         "supported_frame_images": constraints.get("supported_frame_images"),
         "supports_continuation": supports_real_continuation(constraints),
         "supports_video_editing": supports_video_editing(constraints),
+        "supports_character_reference": supports_character_reference(constraints),
     }
 
 @router.get("/api/studio/library")
@@ -278,6 +284,60 @@ async def get_studio_media(request: Request, filename: str):
     finally:
         db.close()
 
+def _apply_character_references(prompt: str, character_ids: List[str], db, refs: List[Dict], suffix: Optional[str] = None) -> str:
+    """Replaces character names in the prompt with pseudonyms and appends their images to refs."""
+    import re
+    import string
+    
+    if not character_ids:
+        return prompt
+        
+    chars = db.query(StudioCharacter).filter(StudioCharacter.id.in_(character_ids)).all()
+    
+    meta_instructions = []
+    
+    for i, char in enumerate(chars):
+        pseudo = f"[Person {string.ascii_uppercase[i]}]"
+        
+        # Replace name with pseudo (case-insensitive) using word boundaries
+        pattern = re.compile(rf'\b{re.escape(char.name)}\b', re.IGNORECASE)
+        prompt = pattern.sub(pseudo, prompt)
+        
+        # Load images
+        import json
+        images = json.loads(char.images_json) if char.images_json else []
+        start_idx = len(refs) + 1
+        
+        for img_filename in images:
+            filepath = os.path.join(STUDIO_CHARACTERS_DIR, char.id, img_filename)
+            if os.path.exists(filepath):
+                with open(filepath, "rb") as f:
+                    b64_data = base64.b64encode(f.read()).decode('utf-8')
+                mime_type, _ = mimetypes.guess_type(filepath)
+                if not mime_type:
+                    mime_type = "image/jpeg"
+                refs.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{b64_data}"
+                    }
+                })
+        end_idx = len(refs)
+        
+        if start_idx <= end_idx:
+            meta_instructions.append(f"Character {pseudo} is depicted in reference images {start_idx} to {end_idx}. Ensure exact facial consistency.")
+            
+    if meta_instructions:
+        prompt += "\n\n" + " ".join(meta_instructions)
+        # If there's an initial reference image (idx 1), it's the scene.
+        if start_idx > 1:
+            if suffix:
+                prompt += " " + suffix
+            else:
+                prompt += " The first reference image dictates the overall scene composition and style."
+            
+    return prompt
+
 @router.delete("/api/studio/{media_id}")
 async def delete_studio_media(request: Request, media_id: str):
     user = require_studio_privilege(request)
@@ -314,19 +374,10 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
         
         payload = {
             "model": target_model,
-            "prompt": req.prompt
         }
-        if req.negative_prompt:
-            payload["negative_prompt"] = req.negative_prompt
-        if req.size:
-            payload["size"] = req.size
-        if req.seed is not None:
-            payload["seed"] = req.seed
-        if req.steps is not None:
-            payload["steps"] = req.steps
         
+        refs = []
         if req.base_media_id:
-            refs = []
             for m_id in req.base_media_id.split(","):
                 m_id = m_id.strip()
                 if m_id:
@@ -336,8 +387,24 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
                             "url": _get_base64_data_url(m_id)
                         }
                     })
-            if refs:
-                payload["input_references"] = refs
+
+        prompt = req.prompt
+        if req.character_ids:
+            prompt = _apply_character_references(prompt, req.character_ids, db, refs, req.character_prompt_suffix)
+            
+        payload["prompt"] = prompt
+        
+        if refs:
+            payload["input_references"] = refs
+
+        if req.negative_prompt:
+            payload["negative_prompt"] = req.negative_prompt
+        if req.size:
+            payload["size"] = req.size
+        if req.seed is not None:
+            payload["seed"] = req.seed
+        if req.steps is not None:
+            payload["steps"] = req.steps
 
         async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
             resp = await client.post("https://openrouter.ai/api/v1/images", json=payload, headers=headers)
@@ -408,24 +475,11 @@ async def generate_video(request: Request, req: VideoGenRequest):
 
         payload = {
             "model": target_model,
-            "prompt": req.prompt
         }
-        if req.negative_prompt:
-            payload["negative_prompt"] = req.negative_prompt
-        if req.duration is not None:
-            payload["duration"] = req.duration
-        if req.resolution:
-            payload["resolution"] = req.resolution
-        if req.aspect_ratio:
-            payload["aspect_ratio"] = req.aspect_ratio
-        if req.size:
-            payload["size"] = req.size
-        if req.generate_audio is not None:
-            payload["generate_audio"] = req.generate_audio
         
+        refs = []
+        frame_imgs = []
         if req.base_media_id:
-            refs = []
-            frame_imgs = []
             for idx, m_id in enumerate(req.base_media_id.split(",")):
                 m_id = m_id.strip()
                 if m_id:
@@ -458,9 +512,18 @@ async def generate_video(request: Request, req: VideoGenRequest):
                             "frame_type": "last_frame"
                         })
 
-            if refs:
-                payload["input_references"] = refs
-                payload["frame_images"] = frame_imgs
+
+        prompt = req.prompt
+        if req.character_ids:
+            # We pass refs by reference, so characters are appended to refs, but NOT to frame_imgs
+            prompt = _apply_character_references(prompt, req.character_ids, db, refs, req.character_prompt_suffix)
+            
+        payload["prompt"] = prompt
+
+        if refs:
+            payload["input_references"] = refs
+        if frame_imgs:
+            payload["frame_images"] = frame_imgs
 
         # Validate / correct resolution, aspect_ratio, duration against
         # what the target model actually supports.
@@ -1008,6 +1071,156 @@ async def edit_video(request: Request, req: VideoEditRequest):
         raise HTTPException(500, str(e))
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Studio Characters (Consistent Characters)
+# ---------------------------------------------------------------------------
+
+class CreateCharacterRequest(BaseModel):
+    name: str
+
+@router.post("/api/studio/characters")
+async def create_character(req: CreateCharacterRequest, request: Request):
+    user_id = await require_studio_privilege(request)
+    char_id = f"char_{uuid.uuid4().hex[:12]}"
+    
+    char_dir = os.path.join(STUDIO_CHARACTERS_DIR, char_id)
+    os.makedirs(char_dir, exist_ok=True)
+    
+    db = SessionLocal()
+    try:
+        new_char = StudioCharacter(
+            id=char_id,
+            owner_id=user_id,
+            name=req.name,
+            images_json="[]",
+            created_at=time.time()
+        )
+        db.add(new_char)
+        db.commit()
+        db.refresh(new_char)
+        return {
+            "id": new_char.id,
+            "name": new_char.name,
+            "images": []
+        }
+    finally:
+        db.close()
+
+@router.get("/api/studio/characters")
+async def get_characters(request: Request):
+    user_id = await require_studio_privilege(request)
+    db = SessionLocal()
+    try:
+        chars = db.query(StudioCharacter).filter(StudioCharacter.owner_id == user_id).all()
+        result = []
+        for c in chars:
+            import json
+            images = json.loads(c.images_json) if c.images_json else []
+            result.append({
+                "id": c.id,
+                "name": c.name,
+                "images": images
+            })
+        return result
+    finally:
+        db.close()
+
+@router.post("/api/studio/characters/{char_id}/images")
+async def upload_character_image(char_id: str, request: Request, file: UploadFile = File(...)):
+    user_id = await require_studio_privilege(request)
+    db = SessionLocal()
+    try:
+        char = db.query(StudioCharacter).filter(
+            StudioCharacter.id == char_id,
+            StudioCharacter.owner_id == user_id
+        ).first()
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found")
+            
+        ext = file.filename.split('.')[-1].lower() if file.filename else "jpg"
+        if ext not in ["jpg", "jpeg", "png", "webp"]:
+            raise HTTPException(status_code=400, detail="Invalid image extension")
+            
+        filename = f"{uuid.uuid4().hex[:8]}.{ext}"
+        char_dir = os.path.join(STUDIO_CHARACTERS_DIR, char_id)
+        os.makedirs(char_dir, exist_ok=True)
+        filepath = os.path.join(char_dir, filename)
+        
+        file_bytes = await read_upload_limited(file, 10_000_000) # 10MB limit
+        with open(filepath, "wb") as f:
+            f.write(file_bytes)
+            
+        import json
+        images = json.loads(char.images_json) if char.images_json else []
+        images.append(filename)
+        char.images_json = json.dumps(images)
+        db.commit()
+        
+        return {"filename": filename}
+    finally:
+        db.close()
+
+@router.delete("/api/studio/characters/{char_id}/images/{filename}")
+async def delete_character_image(char_id: str, filename: str, request: Request):
+    user_id = await require_studio_privilege(request)
+    db = SessionLocal()
+    try:
+        char = db.query(StudioCharacter).filter(
+            StudioCharacter.id == char_id,
+            StudioCharacter.owner_id == user_id
+        ).first()
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found")
+            
+        import json
+        images = json.loads(char.images_json) if char.images_json else []
+        if filename in images:
+            images.remove(filename)
+            char.images_json = json.dumps(images)
+            db.commit()
+            
+            filepath = os.path.join(STUDIO_CHARACTERS_DIR, char_id, filename)
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                
+        return {"status": "ok"}
+    finally:
+        db.close()
+
+@router.delete("/api/studio/characters/{char_id}")
+async def delete_character(char_id: str, request: Request):
+    user_id = await require_studio_privilege(request)
+    db = SessionLocal()
+    try:
+        char = db.query(StudioCharacter).filter(
+            StudioCharacter.id == char_id,
+            StudioCharacter.owner_id == user_id
+        ).first()
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found")
+            
+        db.delete(char)
+        db.commit()
+        
+        import shutil
+        char_dir = os.path.join(STUDIO_CHARACTERS_DIR, char_id)
+        if os.path.exists(char_dir):
+            shutil.rmtree(char_dir)
+            
+        return {"status": "ok"}
+    finally:
+        db.close()
+
+@router.get("/api/studio/characters/{char_id}/images/{filename}")
+async def get_character_image(char_id: str, filename: str, request: Request):
+    """Serve a character image directly."""
+    user_id = await require_studio_privilege(request)
+    filepath = os.path.join(STUDIO_CHARACTERS_DIR, char_id, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(filepath)
 
 
 @router.get("/api/studio/debug_video")

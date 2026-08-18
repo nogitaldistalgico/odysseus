@@ -418,6 +418,20 @@ class StudioMedia(TimestampMixin, Base):
         Index('ix_studio_media_owner', 'owner'),
     )
 
+class StudioCharacter(TimestampMixin, Base):
+    """Stores consistent characters for Media Studio generation."""
+    __tablename__ = "studio_characters"
+
+    id          = Column(String, primary_key=True, index=True)
+    owner_id    = Column(String, nullable=False, index=True)
+    name        = Column(String, nullable=False)
+    images_json = Column(String, nullable=False, default="[]") # JSON array of image filenames
+
+    __table_args__ = (
+        Index('ix_studio_characters_owner', 'owner_id'),
+    )
+
+
 
 
 class EmailAccount(TimestampMixin, Base):
