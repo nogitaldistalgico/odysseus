@@ -969,6 +969,23 @@ Answer in German by default as the user prefers German."""
         approved_plan = ""
         if not plan_mode:
             approved_plan = (form_data.get("approved_plan") or "").strip()[:8192]
+            # Fallback for iOS / API clients that don't send approved_plan explicitly
+            # but are confirming a plan proposed in the previous turn.
+            if not approved_plan and isinstance(message, str):
+                import re
+                _msg_l = message.strip().lower()
+                if re.search(r"^\s*(?:yes|y|yeah|yep|ok|okay|sure|do it|go ahead|continue|carry on|run it|launch it|start it|ja|mach das|bestätigt|los|ausführen|machen)\s*[.!?]*\s*$", _msg_l, re.IGNORECASE):
+                    _last_assistant = None
+                    for _m in reversed(session.messages):
+                        if _m.role == "assistant":
+                            _last_assistant = _m.content
+                            break
+                    if _last_assistant and "- [" in _last_assistant:
+                        lines = _last_assistant.split("\n")
+                        for i, line in enumerate(lines):
+                            if re.match(r"^\s*(?:[-*]|\d+\.)\s+\[[ x-]\]\s+", line, re.IGNORECASE):
+                                approved_plan = "\n".join(lines[i:]).strip()[:8192]
+                                break
         # Did the USER explicitly pick agent mode? (vs. us auto-escalating
         # below). Skill extraction should only learn from real agent sessions,
         # not chats we quietly promoted for a notes/calendar intent.
