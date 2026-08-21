@@ -129,6 +129,19 @@ def mcp_tool_is_readonly(tool: Dict) -> bool:
         return False
     # No usable hint — heuristic on the tool name's leading verb.
     name = (tool.get("name") or "").lower()
+    
+    parts = [p for p in name.split("_") if p]
+    _write_verbs = {
+        "set", "create", "delete", "remove", "update", "call", "toggle", 
+        "execute", "run", "write", "manage", "add", "import", "eval", 
+        "restart", "reload", "bulk", "control", "trigger", "put", "post"
+    }
+    for part in parts:
+        if any(part.startswith(v) for v in _MCP_READONLY_VERBS):
+            return True
+        if part in _write_verbs:
+            return False
+            
     return name.startswith(_MCP_READONLY_VERBS)
 
 

@@ -3538,6 +3538,8 @@ async def stream_agent_loop(
     # Tool retrieval uses the latest message by default. It may inherit recent
     # user turns only for explicit continuations ("yes", "do it", "1").
     _retrieval_query = str(_intent.get("retrieval_query") or _last_user)
+    if approved_plan:
+        _retrieval_query += f"\n\n{approved_plan}"
     if _explicitly_references_missing_workspace(_retrieval_query, workspace):
         msg = (
             "No active workspace is set. Use `/workspace pick` or "
