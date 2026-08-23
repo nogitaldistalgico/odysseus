@@ -25,7 +25,7 @@ log = logging.getLogger("opencode.routes")
 def setup_opencode_routes():
     """Factory — returns ``(proxy_router, config_router)``."""
 
-    from src.auth import require_user
+    from src.auth_helpers import require_user
 
     router = APIRouter(prefix="/api/opencode", tags=["opencode"])
     config_router = APIRouter(prefix="/api/opencode-config", tags=["opencode-config"])
