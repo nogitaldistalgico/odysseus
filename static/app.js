@@ -1071,6 +1071,17 @@ function initializeEventListeners() {
     });
   }
 
+  // OpenCode tool button
+  const toolCodeBtn = el('tool-code-btn');
+  if (toolCodeBtn) {
+    toolCodeBtn.addEventListener('click', async () => {
+      const Modals = await import('./js/modalManager.js');
+      if (!Modals.toggle('opencode-modal')) {
+        import('./js/opencode/opencode.js').then(m => m.openCodeView());
+      }
+    });
+  }
+
   // Calendar tool button
   const toolCalendarBtn = el('tool-calendar-btn');
   if (toolCalendarBtn) {
