@@ -1,0 +1,359 @@
+/* OpenCode Fullscreen Modal */
+#opencode-modal.opencode-fullscreen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    border-radius: 0;
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    background-color: var(--bg);
+}
+
+#opencode-modal.opencode-fullscreen .modal-content {
+    height: 100%;
+    border-radius: 0;
+    border: none;
+    display: flex;
+    flex-direction: column;
+    background-color: transparent;
+}
+
+#opencode-body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+}
+
+/* Sidebar */
+.oc-sidebar {
+    width: 280px;
+    background-color: var(--sidebar-bg, var(--input-bg));
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    transition: transform 0.3s ease;
+}
+
+.oc-project-picker {
+    padding: 15px;
+    border-bottom: 1px solid var(--border);
+}
+
+.oc-project-picker select {
+    width: 100%;
+    padding: 8px;
+    background-color: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
+
+.oc-sessions-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 0;
+}
+
+.oc-session-item {
+    padding: 12px 15px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-left: 3px solid transparent;
+}
+
+.oc-session-item:hover {
+    background-color: var(--hover-bg, rgba(255, 255, 255, 0.05));
+}
+
+.oc-session-item.active {
+    background-color: var(--hover-bg, rgba(255, 255, 255, 0.05));
+    border-left-color: var(--accent);
+}
+
+.oc-session-title {
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Status Badges */
+.oc-status-badge {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+.oc-status-idle {
+    background-color: #2ea043;
+}
+
+.oc-status-busy {
+    background-color: #388bfd;
+    animation: oc-pulse 1.5s infinite;
+}
+
+.oc-status-error {
+    background-color: #f85149;
+}
+
+@keyframes oc-pulse {
+    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(56, 139, 253, 0.7); }
+    70% { transform: scale(1); box-shadow: 0 0 0 4px rgba(56, 139, 253, 0); }
+    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(56, 139, 253, 0); }
+}
+
+/* Main Area */
+.oc-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+}
+
+.oc-chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.oc-empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--fg);
+    opacity: 0.6;
+    font-size: 1.1em;
+}
+
+/* Messages */
+.oc-message {
+    max-width: 85%;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.oc-message.user {
+    align-self: flex-end;
+}
+
+.oc-message.user .oc-message-content {
+    background-color: var(--input-bg);
+    padding: 12px 16px;
+    border-radius: 8px 8px 0 8px;
+    border: 1px solid var(--border);
+}
+
+.oc-message.assistant {
+    align-self: flex-start;
+    width: 100%;
+}
+
+/* Blocks */
+.oc-code-block {
+    background-color: var(--code-bg, rgba(0, 0, 0, 0.3));
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    overflow-x: auto;
+    font-family: monospace;
+    font-size: 0.9em;
+    margin: 10px 0;
+}
+
+.oc-diff-block {
+    background-color: var(--code-bg, rgba(0, 0, 0, 0.3));
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 0;
+    font-family: monospace;
+    font-size: 0.9em;
+    overflow-x: auto;
+}
+
+.oc-diff-line {
+    padding: 0 12px;
+    white-space: pre;
+}
+
+.oc-diff-add {
+    background-color: rgba(46, 160, 67, 0.15);
+    color: #2ea043;
+}
+
+.oc-diff-del {
+    background-color: rgba(248, 81, 73, 0.15);
+    color: #f85149;
+}
+
+/* Tool Execution Blocks */
+.oc-tool-block {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin: 10px 0;
+    overflow: hidden;
+}
+
+.oc-tool-header {
+    background-color: var(--input-bg);
+    padding: 8px 12px;
+    font-family: monospace;
+    font-size: 0.85em;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.oc-tool-body {
+    background-color: #0d1117;
+    color: #c9d1d9;
+    padding: 12px;
+    font-family: monospace;
+    font-size: 0.85em;
+    overflow-x: auto;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+/* Cards */
+.oc-permission-card, .oc-question-card {
+    background-color: var(--input-bg);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 15px;
+    margin: 10px 0;
+}
+
+.oc-thinking-block {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin: 10px 0;
+}
+
+.oc-thinking-block summary {
+    padding: 8px 12px;
+    cursor: pointer;
+    background-color: var(--input-bg);
+    font-size: 0.9em;
+    opacity: 0.8;
+}
+
+.oc-thinking-block .content {
+    padding: 12px;
+    font-size: 0.9em;
+    opacity: 0.8;
+}
+
+/* Prompt Bar */
+.oc-prompt-bar {
+    padding: 15px 20px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background-color: var(--bg);
+}
+
+.oc-prompt-input-container {
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+}
+
+.oc-prompt-input-container textarea {
+    flex: 1;
+    background-color: var(--input-bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    resize: none;
+    min-height: 44px;
+    max-height: 200px;
+    font-family: inherit;
+}
+
+.oc-prompt-input-container button {
+    background-color: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 16px;
+    cursor: pointer;
+    height: 44px;
+    font-weight: 500;
+}
+
+.oc-mode-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85em;
+    color: var(--fg);
+    opacity: 0.8;
+}
+
+/* Todo Panel */
+.oc-todo-panel {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin: 15px 0;
+    padding: 12px;
+    background-color: var(--input-bg);
+}
+
+.oc-todo-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 8px;
+    font-size: 0.9em;
+}
+
+.oc-todo-item:last-child {
+    margin-bottom: 0;
+}
+
+.oc-todo-item input[type="checkbox"] {
+    margin-top: 3px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .oc-sidebar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        height: 100%;
+        z-index: 10;
+        transform: translateX(-100%);
+    }
+
+    .oc-sidebar.open {
+        transform: translateX(0);
+        box-shadow: 2px 0 10px rgba(0,0,0,0.5);
+    }
+
+    .oc-message {
+        max-width: 95%;
+    }
+}

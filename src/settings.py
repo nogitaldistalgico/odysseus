@@ -202,6 +202,12 @@ DEFAULT_SETTINGS = {
         "admin_panel": "ctrl+shift+u",
         "cancel": "escape",
     },
+    # OpenCode integration — transparent proxy to a remote opencode serve
+    # instance for AI-assisted coding from the Odysseus UI and mobile.
+    "opencode_url": "",              # e.g. "http://10.0.0.5:4096"
+    "opencode_username": "opencode", # HTTP Basic Auth username
+    "opencode_password": "",         # HTTP Basic Auth password
+    "opencode_projects": [],         # list of project directory paths
 }
 
 

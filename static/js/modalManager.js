@@ -1421,6 +1421,7 @@ const _AUTO_WIRE = {
   // wiring it here makes tab-down use the new .minimized-dock-chip instead of
   // the legacy .modal-dock-item.
   'custom-preset-modal':  { rail: null,             sidebar: null },
+  'opencode-modal':       { rail: 'rail-code',      sidebar: 'tool-code-btn' },
 };
 
 function _autoRegister(id) {

@@ -189,6 +189,7 @@ _TIMEOUT_EXEMPT_PREFIXES = (
     "/api/image",           # diffusion proxies (inpaint/harmonize/upscale/etc.) — own 120s httpx timeout
     "/api/memory/audit",    # retains own 120s LLM inactivity timeout
     "/api/studio",          # generation requests can take minutes; library/media must not be killed either
+    "/api/opencode",        # transparent proxy: SSE event streams + long LLM prompts
 )
 
 
@@ -901,6 +902,12 @@ app.include_router(setup_contacts_routes())
 from companion import setup_companion_routes
 app.include_router(setup_companion_routes())
 
+# OpenCode (transparent proxy to remote opencode serve instance)
+from routes.opencode_routes import setup_opencode_routes
+_oc_router, _oc_config_router = setup_opencode_routes()
+app.include_router(_oc_router)
+app.include_router(_oc_config_router)
+
 # ========= ROUTES (kept in app.py) =========
 
 @app.get("/")
@@ -949,6 +956,10 @@ async def serve_tasks(request: Request):
 
 @app.get("/library")
 async def serve_library(request: Request):
+    return await serve_index(request)
+
+@app.get("/code")
+async def serve_code(request: Request):
     return await serve_index(request)
 
 @app.get("/backgrounds")
