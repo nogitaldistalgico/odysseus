@@ -52,7 +52,9 @@ export function createProjectPicker(container, { onProjectChange }) {
      */
     const render = (projects) => {
         select.innerHTML = '';
-        currentProjects = projects || [];
+        // Map string paths to objects if necessary, or just use them as strings
+        // The backend returns an array of strings: ["/path/one", "/path/two"]
+        currentProjects = (projects || []).map(p => typeof p === 'string' ? {path: p} : p);
 
         if (currentProjects.length === 0) {
             select.style.display = 'none';
