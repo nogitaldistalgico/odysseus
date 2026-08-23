@@ -2194,6 +2194,60 @@ function initAll() {
   initEmailAccountsSettings();
   initReminderSettings();
   initUnifiedIntegrations();
+  initOpenCodeSettings();
+}
+
+async function initOpenCodeSettings() {
+  const urlInput = el('set-oc-url');
+  const userInput = el('set-oc-user');
+  const passInput = el('set-oc-pass');
+  const projInput = el('set-oc-proj');
+  const saveBtn = el('btn-oc-save');
+  const msgEl = el('set-oc-msg');
+  if (!urlInput || !saveBtn) return;
+
+  try {
+    const res = await fetch('/api/auth/settings', { credentials: 'same-origin' });
+    const settings = await res.json();
+    urlInput.value = settings.opencode_url || '';
+    userInput.value = settings.opencode_username || 'opencode';
+    passInput.value = settings.opencode_password || '';
+    projInput.value = (settings.opencode_projects || []).join(', ');
+  } catch (e) {
+    console.error('[OpenCode] Failed to load settings:', e);
+  }
+
+  saveBtn.addEventListener('click', async () => {
+    msgEl.textContent = 'Saving...';
+    msgEl.style.color = 'var(--fg)';
+    const payload = {
+      opencode_url: urlInput.value.trim(),
+      opencode_username: userInput.value.trim() || 'opencode',
+      opencode_password: passInput.value.trim(),
+      opencode_projects: projInput.value.split(',').map(s => s.trim()).filter(Boolean)
+    };
+    try {
+      const res = await fetch('/api/auth/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        msgEl.textContent = 'Saved!';
+        msgEl.style.color = '#2ea043'; // success green
+        setTimeout(() => msgEl.textContent = '', 3000);
+        // Force the backend proxy to reload its singleton instance
+        fetch('/api/opencode-config/reload', { method: 'POST' }).catch(()=>{});
+      } else {
+        const err = await res.text();
+        msgEl.textContent = 'Error: ' + err;
+        msgEl.style.color = '#f85149';
+      }
+    } catch (err) {
+      msgEl.textContent = 'Error: ' + err.message;
+      msgEl.style.color = '#f85149';
+    }
+  });
 }
 
 function notifyIntegrationsChanged() {
