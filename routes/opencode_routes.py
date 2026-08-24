@@ -25,7 +25,7 @@ log = logging.getLogger("opencode.routes")
 def setup_opencode_routes():
     """Factory — returns ``(proxy_router, config_router)``."""
 
-    from src.auth_helpers import require_user
+    from src.auth_helpers import require_user_api_aware
 
     router = APIRouter(prefix="/api/opencode", tags=["opencode"])
     config_router = APIRouter(prefix="/api/opencode-config", tags=["opencode-config"])
@@ -70,7 +70,7 @@ def setup_opencode_routes():
     @router.get("/event")
     async def proxy_event_stream(request: Request):
         """Transparent SSE proxy to opencode's global event bus."""
-        require_user(request)
+        require_user_api_aware(request)
         proxy = _get_proxy()
         result = await proxy.proxy_stream(request, "event")
         if result is None:
@@ -108,7 +108,7 @@ def setup_opencode_routes():
     )
     async def proxy_catchall(request: Request, path: str):
         """Forward any opencode REST request transparently."""
-        require_user(request)
+        require_user_api_aware(request)
         proxy = _get_proxy()
 
         content_type_hint = request.headers.get("accept", "")
@@ -171,7 +171,7 @@ def setup_opencode_routes():
     @config_router.get("")
     async def get_opencode_config(request: Request):
         """Return Odysseus-side opencode configuration."""
-        require_user(request)
+        require_user_api_aware(request)
         from src.settings import get_setting
 
         return {
@@ -183,7 +183,7 @@ def setup_opencode_routes():
     @config_router.post("/projects")
     async def set_opencode_projects(request: Request):
         """Update the list of project directories."""
-        require_user(request)
+        require_user_api_aware(request)
         from src.settings import load_settings, save_settings
 
         body = await request.json()
@@ -195,7 +195,7 @@ def setup_opencode_routes():
     @config_router.get("/health")
     async def opencode_health(request: Request):
         """Probe opencode server connectivity."""
-        require_user(request)
+        require_user_api_aware(request)
         try:
             proxy = _get_proxy()
         except HTTPException:
@@ -208,7 +208,7 @@ def setup_opencode_routes():
     @config_router.post("/reload")
     async def reload_opencode_proxy(request: Request):
         """Drop cached proxy so next request re-reads settings."""
-        require_user(request)
+        require_user_api_aware(request)
         _invalidate_proxy()
         return {"ok": True, "detail": "Proxy will reconnect on next request."}
 
