@@ -17,34 +17,57 @@ import { renderCodeBlock, renderDiff } from './codeRenderer.js';
 export function renderToolCall(part) {
     const el = document.createElement('div');
     el.className = 'oc-tool-block oc-tool-call';
-    el.id = `tool-call-${part.id}`;
+    el.id = `tool-call-${part.id || Date.now()}`;
+
+    const toolName = part.name || part.toolName || 'tool';
+    let argsObj = {};
+    if (typeof part.arguments === 'string') {
+        try { argsObj = JSON.parse(part.arguments); } catch(e) { argsObj = { raw: part.arguments }; }
+    } else if (part.arguments) {
+        argsObj = part.arguments;
+    } else if (part.args) {
+        argsObj = part.args;
+    }
 
     const header = document.createElement('div');
     header.className = 'oc-tool-header';
+    
+    // Create a compact preview of the command/args
+    let previewText = '';
+    if (['bash', 'run_command', 'shell'].includes(toolName)) {
+        previewText = argsObj.command || argsObj.CommandLine || argsObj.raw || '';
+    } else if (['file_edit', 'file_write', 'file_patch', 'replace_file_content', 'write_to_file'].includes(toolName)) {
+        previewText = argsObj.path || argsObj.TargetFile || argsObj.file || 'File';
+    } else if (toolName.includes('read_') || toolName.includes('view_')) {
+        previewText = argsObj.path || argsObj.AbsolutePath || argsObj.file || 'File';
+    }
+    
+    // Truncate preview
+    const maxLen = 60;
+    if (previewText.length > maxLen) previewText = previewText.substring(0, maxLen) + '...';
+
     header.innerHTML = `
-        <span class="oc-tool-icon">🔧</span>
-        <span class="oc-tool-name">${escapeHtml(part.toolName)}</span>
-        <span class="oc-tool-toggle">▼</span>
+        <span class="oc-tool-name">${escapeHtml(toolName)}</span>
+        <span class="oc-tool-preview" style="color:var(--fg); opacity:0.6; font-size:0.9em; margin-left:8px;">${escapeHtml(previewText)}</span>
+        <span class="oc-tool-toggle" style="margin-left:auto;">▼</span>
     `;
     
     const body = document.createElement('div');
     body.className = 'oc-tool-body';
     
     // Render args based on tool type
-    if (part.toolName === 'bash') {
-        const cmd = part.args.command || part.args.CommandLine || JSON.stringify(part.args);
+    if (['bash', 'run_command', 'shell'].includes(toolName)) {
+        const cmd = argsObj.command || argsObj.CommandLine || argsObj.raw || JSON.stringify(argsObj);
         body.innerHTML = renderCodeBlock(cmd, 'bash');
-    } else if (['file_edit', 'file_write', 'file_patch'].includes(part.toolName)) {
-        const filePath = part.args.path || part.args.TargetFile || part.args.file || 'Unknown file';
-        const content = part.args.content || part.args.ReplacementContent || part.args.CodeContent || part.args.patch || '';
+    } else if (['file_edit', 'file_write', 'file_patch', 'replace_file_content', 'write_to_file'].includes(toolName)) {
+        const filePath = argsObj.path || argsObj.TargetFile || argsObj.file || 'Unknown file';
+        const content = argsObj.content || argsObj.ReplacementContent || argsObj.CodeContent || argsObj.patch || '';
         body.innerHTML = `
-            <div class="oc-tool-filepath">${escapeHtml(filePath)}</div>
+            <div class="oc-tool-filepath" style="margin-bottom:8px; font-weight:bold;">${escapeHtml(filePath)}</div>
             ${renderCodeBlock(content, 'javascript')} 
         `;
-    } else if (['file_read', 'grep', 'find'].includes(part.toolName)) {
-        body.innerHTML = renderCodeBlock(JSON.stringify(part.args, null, 2), 'json');
     } else {
-        body.innerHTML = renderCodeBlock(JSON.stringify(part.args, null, 2), 'json');
+        body.innerHTML = renderCodeBlock(JSON.stringify(argsObj, null, 2), 'json');
     }
 
     // Default collapsed
@@ -73,36 +96,46 @@ export function renderToolCall(part) {
  */
 export function renderToolResult(part) {
     const el = document.createElement('div');
-    el.className = `oc-tool-block oc-tool-result ${part.error ? 'oc-tool-error' : ''}`;
-    el.id = `tool-result-${part.id}`;
+    const isError = part.error || part.isError || false;
+    el.className = `oc-tool-block oc-tool-result ${isError ? 'oc-tool-error' : ''}`;
+    el.id = `tool-result-${part.id || Date.now()}`;
+
+    const toolName = part.name || part.toolName || 'tool';
+    let outputStr = '';
+    if (typeof part.output === 'string') {
+        outputStr = part.output;
+    } else if (typeof part.content === 'string') {
+        outputStr = part.content;
+    } else if (part.output || part.content || part.result) {
+        outputStr = JSON.stringify(part.output || part.content || part.result, null, 2);
+    }
 
     const header = document.createElement('div');
     header.className = 'oc-tool-header';
     header.innerHTML = `
-        <span class="oc-tool-icon">${part.error ? '❌' : '✅'}</span>
-        <span class="oc-tool-name">${escapeHtml(part.toolName)} Result</span>
-        <span class="oc-tool-toggle">${part.error ? '▲' : '▼'}</span>
+        <span class="oc-tool-name">${escapeHtml(toolName)} Result</span>
+        <span class="oc-tool-toggle" style="margin-left:auto;">${isError ? '▲' : '▼'}</span>
     `;
 
     const body = document.createElement('div');
     body.className = 'oc-tool-body';
     
-    if (part.toolName === 'bash') {
-        body.innerHTML = renderCodeBlock(part.output, 'bash');
+    if (['bash', 'run_command', 'shell'].includes(toolName)) {
+        body.innerHTML = renderCodeBlock(outputStr, 'bash');
         body.classList.add('oc-terminal-output');
-    } else if (['file_edit', 'file_write', 'file_patch'].includes(part.toolName)) {
+    } else if (['file_edit', 'file_write', 'file_patch', 'replace_file_content'].includes(toolName)) {
         // Might include a diff in the output
-        if (part.output.includes('---') && part.output.includes('+++')) {
-            body.innerHTML = renderDiff(part.output);
+        if (outputStr.includes('---') && outputStr.includes('+++')) {
+            body.innerHTML = renderDiff(outputStr);
         } else {
-            body.innerHTML = renderCodeBlock(part.output, 'text');
+            body.innerHTML = renderCodeBlock(outputStr, 'text');
         }
     } else {
-        body.innerHTML = renderCodeBlock(part.output, 'text');
+        body.innerHTML = renderCodeBlock(outputStr, 'text');
     }
 
     // Default: collapsed if success, expanded if error
-    body.style.display = part.error ? 'block' : 'none';
+    body.style.display = isError ? 'block' : 'none';
 
     header.addEventListener('click', () => {
         const isCollapsed = body.style.display === 'none';
@@ -125,22 +158,30 @@ export function updateToolResult(element, part) {
     const body = element.querySelector('.oc-tool-body');
     if (!body) return;
     
-    if (part.toolName === 'bash') {
-        body.innerHTML = renderCodeBlock(part.output, 'bash');
-    } else if (['file_edit', 'file_write', 'file_patch'].includes(part.toolName)) {
-        if (part.output.includes('---') && part.output.includes('+++')) {
-            body.innerHTML = renderDiff(part.output);
-        } else {
-            body.innerHTML = renderCodeBlock(part.output, 'text');
-        }
-    } else {
-        body.innerHTML = renderCodeBlock(part.output, 'text');
+    const toolName = part.name || part.toolName || 'tool';
+    let outputStr = '';
+    if (typeof part.output === 'string') {
+        outputStr = part.output;
+    } else if (typeof part.content === 'string') {
+        outputStr = part.content;
+    } else if (part.output || part.content || part.result) {
+        outputStr = JSON.stringify(part.output || part.content || part.result, null, 2);
     }
 
-    if (part.error) {
+    if (['bash', 'run_command', 'shell'].includes(toolName)) {
+        body.innerHTML = renderCodeBlock(outputStr, 'bash');
+    } else if (['file_edit', 'file_write', 'file_patch', 'replace_file_content'].includes(toolName)) {
+        if (outputStr.includes('---') && outputStr.includes('+++')) {
+            body.innerHTML = renderDiff(outputStr);
+        } else {
+            body.innerHTML = renderCodeBlock(outputStr, 'text');
+        }
+    } else {
+        body.innerHTML = renderCodeBlock(outputStr, 'text');
+    }
+
+    if (part.error || part.isError) {
         element.classList.add('oc-tool-error');
-        const icon = element.querySelector('.oc-tool-icon');
-        if (icon) icon.textContent = '❌';
         body.style.display = 'block';
         const toggle = element.querySelector('.oc-tool-toggle');
         if (toggle) toggle.textContent = '▲';
