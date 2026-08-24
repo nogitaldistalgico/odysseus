@@ -149,12 +149,7 @@ export const client = {
     if (dir) headers['x-opencode-directory'] = dir;
     return _fetch('provider', { headers });
   },
-  getModels: (providerId) => {
-    const dir = localStorage.getItem('oc_active_project');
-    const headers = {};
-    if (dir) headers['x-opencode-directory'] = dir;
-    return _fetch(`provider/${providerId}/model`, { headers });
-  },
+
   abort: (id) => _fetch(`session/${id}/abort`, { method: 'POST' }),
   getStatus: (id) => _fetch(`session/${id}/status`),
   getDiff: (id) => _fetch(`session/${id}/diff`),

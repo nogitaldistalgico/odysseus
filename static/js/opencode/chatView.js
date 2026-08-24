@@ -246,15 +246,17 @@ export function createChatView(container, { client }) {
     // Fetch and populate models
     (async () => {
         try {
-            if (client.getProviders && client.getModels) {
+            if (client.getProviders) {
                 const providersRaw = await client.getProviders();
-                const providerList = Array.isArray(providersRaw) ? providersRaw : (providersRaw.providers || providersRaw.data || Object.values(providersRaw) || []);
+                const providerList = providersRaw.all || providersRaw.providers || providersRaw.data || (Array.isArray(providersRaw) ? providersRaw : Object.values(providersRaw)) || [];
                 
                 let foundAny = false;
                 for (const p of providerList) {
                     if (!p || (!p.id && !p.name)) continue;
-                    const modelsRaw = await client.getModels(p.id || p.name);
-                    const modelList = Array.isArray(modelsRaw) ? modelsRaw : (modelsRaw.models || modelsRaw.data || Object.values(modelsRaw) || []);
+                    
+                    // OpenCode v2 embeds models inside the provider object
+                    const modelsMap = p.models || {};
+                    const modelList = Array.isArray(modelsMap) ? modelsMap : Object.values(modelsMap);
                     
                     if (modelList.length === 0) continue;
                     
@@ -273,6 +275,8 @@ export function createChatView(container, { client }) {
                 
                 if (!foundAny) {
                     defaultModelOpt.textContent = 'Default (No models found)';
+                } else {
+                    defaultModelOpt.textContent = 'Default Model';
                 }
             }
         } catch (err) {
