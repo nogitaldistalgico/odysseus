@@ -253,51 +253,163 @@
 
 /* Tool Execution Blocks */
 .oc-tool-block {
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    margin: 10px 0;
-    overflow: hidden;
-    background-color: var(--bg);
+    margin: 12px 0;
 }
 
-.oc-tool-header {
-    padding: 8px 12px;
-    font-family: var(--font-family, sans-serif);
-    font-size: 0.9em;
-    cursor: pointer;
+.oc-tool-title {
     display: flex;
     align-items: center;
-    background-color: transparent;
+    gap: 8px;
+    font-size: 0.95em;
+    padding: 4px 0;
 }
-.oc-tool-header:hover {
+.oc-tool-icon {
+    flex-shrink: 0;
+    font-size: 1em;
+}
+.oc-tool-label {
+    font-weight: 600;
+    color: var(--fg);
+    white-space: nowrap;
+}
+.oc-tool-target {
+    color: var(--fg);
+    opacity: 0.7;
+    font-family: monospace;
+    font-size: 0.9em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Bash blocks */
+.oc-bash-block, .oc-bash-output {
+    margin: 4px 0;
+}
+
+/* Code blocks inside tool parts */
+.oc-code-block {
     background-color: var(--input-bg);
-}
-.oc-tool-body {
-    border-top: 1px solid var(--border);
-    background-color: #0d1117;
-    color: #c9d1d9;
-    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
     font-family: monospace;
     font-size: 0.85em;
     overflow-x: auto;
     max-height: 400px;
     overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 4px 0;
+    line-height: 1.5;
 }
-.oc-tool-name {
-    font-weight: bold;
-    color: var(--fg);
+
+/* Diff coloring */
+.oc-diff-block { white-space: pre; }
+.oc-diff-add { color: #3fb950; }
+.oc-diff-del { color: #f85149; }
+.oc-diff-hunk { color: #6e7681; }
+
+/* Results toggle button (matching OpenCode's collapsible sections) */
+.oc-results-wrapper { margin: 4px 0; }
+.oc-results-btn {
+    background: none;
+    border: none;
+    color: var(--accent, #58a6ff);
+    cursor: pointer;
+    font-size: 0.9em;
+    padding: 2px 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
 }
-.oc-tool-preview {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+.oc-results-btn:hover { text-decoration: underline; }
+.oc-results-chevron { font-size: 0.7em; }
+.oc-results-content { margin-top: 4px; }
+
+/* Error content */
+.oc-tool-error-content {
+    margin: 4px 0;
+}
+.oc-error-text {
+    color: #f85149;
     font-family: monospace;
+    font-size: 0.85em;
+    white-space: pre-wrap;
+    padding: 8px 12px;
+    background: rgba(248, 81, 73, 0.1);
+    border-radius: 6px;
+    border: 1px solid rgba(248, 81, 73, 0.3);
 }
-.oc-tool-error .oc-tool-header {
-    background-color: rgba(255, 0, 0, 0.1);
+
+/* Spinner for running tools */
+.oc-tool-spinner {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85em;
+    color: var(--fg);
+    opacity: 0.6;
+    padding: 4px 0;
 }
-.oc-tool-error .oc-tool-body {
-    border-color: rgba(255, 0, 0, 0.3);
+
+/* Tool dimmed output */
+.oc-tool-dimmed {
+    font-size: 0.85em;
+    color: var(--fg);
+    opacity: 0.5;
+}
+
+/* Tool args grid (fallback) */
+.oc-tool-args {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 2px 12px;
+    font-size: 0.85em;
+    margin: 4px 0;
+    padding: 8px 12px;
+    background: var(--input-bg);
+    border-radius: 6px;
+}
+.oc-tool-arg-row { display: contents; }
+.oc-arg-key { font-weight: 600; color: var(--fg); opacity: 0.7; }
+.oc-arg-val { font-family: monospace; word-break: break-word; }
+
+/* Todo list */
+.oc-todo-list {
+    list-style: none;
+    padding: 0;
+    margin: 8px 0;
+}
+.oc-todo-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    font-size: 0.9em;
+}
+.oc-todo-item[data-status="completed"] { opacity: 0.5; text-decoration: line-through; }
+
+/* Prompt quote */
+.oc-tool-prompt {
+    font-style: italic;
+    color: var(--fg);
+    opacity: 0.7;
+    padding: 4px 0;
+    font-size: 0.9em;
+}
+
+/* Attachment */
+.oc-attachment {
+    padding: 4px 0;
+    font-size: 0.9em;
+}
+
+/* Agent/retry parts */
+.oc-agent-part, .oc-retry-part {
+    padding: 4px 0;
+    font-size: 0.9em;
+    opacity: 0.7;
 }
 
 /* Cards */

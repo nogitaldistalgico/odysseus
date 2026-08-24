@@ -2,7 +2,7 @@
  * @fileoverview Main chat interface for interacting with an OpenCode session.
  */
 
-import { renderToolCall, renderToolResult, updateToolResult } from './toolRenderer.js';
+import { renderToolPart, renderToolCall, renderToolResult, updateToolResult } from './toolRenderer.js';
 import { renderCodeBlock, renderDiff } from './codeRenderer.js';
 import { renderPermission, renderQuestion, removePermission, removeQuestion } from './permissionUI.js';
 
@@ -413,45 +413,107 @@ export function createChatView(container, { client }) {
     const createPartElement = (part) => {
         const div = document.createElement('div');
         div.className = 'oc-message-part';
-        div.dataset.id = part.id;
+        if (part.id) div.dataset.id = part.id;
+        div.dataset.type = part.type || '';
+        
+        // OpenCode part types (from message-v2.ts):
+        //   "text", "tool", "reasoning", "step-start", "step-finish",
+        //   "file", "snapshot", "patch", "compaction", "subtask", "agent", "retry"
         
         if (part.type === 'text') {
-            div.appendChild(parseMarkdown(part.text || ''));
-        } else if ((part.type === 'tool_call' || part.toolCall) && renderToolCall) {
-            div.appendChild(renderToolCall(part.tool_call || part.toolCall || part));
-        } else if ((part.type === 'tool_result' || part.toolResult) && renderToolResult) {
-            div.appendChild(renderToolResult(part.tool_result || part.toolResult || part));
+            if (part.text) div.appendChild(parseMarkdown(part.text));
+            
+        } else if (part.type === 'tool') {
+            // This is THE main tool part type in OpenCode.
+            // It has part.tool (name), part.state (status, input, output, metadata)
+            div.appendChild(renderToolPart(part));
+            
         } else if (part.type === 'reasoning') {
             const details = document.createElement('details');
             details.className = 'oc-thinking-block';
-            details.innerHTML = `<summary>Thinking...</summary><div class="content">${part.text || ''}</div>`;
+            const summary = document.createElement('summary');
+            summary.textContent = 'Thinking...';
+            const content = document.createElement('div');
+            content.className = 'content';
+            if (part.text) content.appendChild(parseMarkdown(part.text));
+            details.appendChild(summary);
+            details.appendChild(content);
             div.appendChild(details);
-        } else if (['bash', 'file_edit', 'file_write', 'file_read', 'shell', 'command', 'grep', 'find'].includes(part.type) || part.toolName || part.name) {
-            // Opencode might use the tool name directly as the part type!
-            // Or if it just has a toolName/name, it's a tool call.
-            div.appendChild(renderToolCall(part));
+            
+        } else if (part.type === 'step-start') {
+            // Model/provider step indicator - skip or render minimally
+            // OpenCode shows this as the provider icon in the left margin
+            div.style.display = 'none';
+            
+        } else if (part.type === 'step-finish') {
+            // Token/cost summary at end of a step - skip for now
+            div.style.display = 'none';
+            
+        } else if (part.type === 'file') {
+            // User attachment
+            const attachDiv = document.createElement('div');
+            attachDiv.className = 'oc-attachment';
+            attachDiv.textContent = `📎 ${part.filename || 'Datei'}`;
+            div.appendChild(attachDiv);
+            
+        } else if (part.type === 'snapshot' || part.type === 'patch') {
+            // Internal bookkeeping, don't render
+            div.style.display = 'none';
+            
+        } else if (part.type === 'compaction') {
+            // Context compaction marker
+            div.style.display = 'none';
+            
+        } else if (part.type === 'agent') {
+            // Sub-agent part
+            const agentDiv = document.createElement('div');
+            agentDiv.className = 'oc-agent-part';
+            agentDiv.textContent = `🤖 Agent: ${part.name || ''}`;
+            div.appendChild(agentDiv);
+            
+        } else if (part.type === 'retry') {
+            const retryDiv = document.createElement('div');
+            retryDiv.className = 'oc-retry-part';
+            retryDiv.textContent = `🔄 Retry #${part.attempt || ''}`;
+            div.appendChild(retryDiv);
+            
+        } else if (part.type === 'tool_call' || part.type === 'tool_result') {
+            // Legacy/v1 format fallback
+            div.appendChild(renderToolPart(part));
+            
         } else {
-            console.warn('Odysseus: Unrecognized message part type:', part.type, part);
+            console.warn('Odysseus: Unrecognized message part type:', part.type, JSON.stringify(part).substring(0, 200));
         }
         return div;
     };
 
     const renderMessage = (msg) => {
+        // OpenCode v2 messages come as { info: {...}, parts: [...] }
+        // Flatten if needed
+        const info = msg.info || msg;
+        const parts = msg.parts || info.parts || [];
+        
         const msgEl = document.createElement('div');
-        msgEl.className = `oc-message ${msg.role}`;
-        msgEl.dataset.id = msg.id;
+        msgEl.className = `oc-message ${info.role || 'assistant'}`;
+        msgEl.dataset.id = info.id;
 
         const contentWrap = document.createElement('div');
         contentWrap.className = 'oc-message-content';
 
-        // Sometimes tool calls are interleaved in parts, sometimes separate.
-        const allParts = [];
-        if (msg.parts) allParts.push(...msg.parts);
-        if (msg.tool_calls) allParts.push(...msg.tool_calls);
-        if (msg.toolCalls) allParts.push(...msg.toolCalls);
-        if (msg.tools) allParts.push(...msg.tools);
+        // Filter out internal/invisible parts (like OpenCode does in Share.tsx)
+        const visibleParts = parts.filter((p, index) => {
+            if (p.type === 'step-start' && index > 0) return false;
+            if (p.type === 'snapshot') return false;
+            if (p.type === 'patch') return false;
+            if (p.type === 'step-finish') return false;
+            if (p.type === 'compaction') return false;
+            if (p.type === 'text' && p.synthetic === true) return false;
+            if (p.type === 'text' && !p.text) return false;
+            if (p.type === 'tool' && (p.state?.status === 'pending' || p.state?.status === 'running')) return false;
+            return true;
+        });
 
-        allParts.forEach(part => {
+        visibleParts.forEach(part => {
             const pEl = createPartElement(part);
             if (part.id) partElements.set(part.id, pEl);
             contentWrap.appendChild(pEl);
@@ -459,7 +521,7 @@ export function createChatView(container, { client }) {
 
         msgEl.appendChild(contentWrap);
         messagesArea.appendChild(msgEl);
-        messageElements.set(msg.id, msgEl);
+        messageElements.set(info.id, msgEl);
         scrollToBottom();
     };
 
@@ -483,7 +545,16 @@ export function createChatView(container, { client }) {
         try {
             const res = await fetch(`/api/opencode/session/${session.id}/message`);
             const data = await res.json();
-            const messages = Array.isArray(data) ? data : (data.messages || []);
+            // OpenCode v2 returns { items: [{info, parts}], more, cursor }
+            // But might also return a flat array or { messages: [...] }
+            let messages = [];
+            if (data.items && Array.isArray(data.items)) {
+                messages = data.items;
+            } else if (Array.isArray(data)) {
+                messages = data;
+            } else if (data.messages) {
+                messages = data.messages;
+            }
             messages.forEach(renderMessage);
         } catch (err) {
             console.error('Failed to load messages:', err);
@@ -532,9 +603,12 @@ export function createChatView(container, { client }) {
                 }
             } else if (event.type === 'message.part.updated') {
                 const pEl = partElements.get(data.part.id);
-                if (pEl && updateToolResult) {
-                     // Opencode might use tool_result as type, or we just pass the part directly.
-                     updateToolResult(pEl, data.part.tool_result || data.part);
+                if (pEl) {
+                    // Re-render the entire part (tool state may have changed from running -> completed)
+                    const newEl = createPartElement(data.part);
+                    if (data.part.id) partElements.set(data.part.id, newEl);
+                    pEl.replaceWith(newEl);
+                    scrollToBottom();
                 }
             } else if (event.type === 'permission.created' && renderPermission) {
                 const pEl = renderPermission(data, client);
