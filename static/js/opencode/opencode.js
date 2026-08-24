@@ -131,16 +131,20 @@ export const client = {
       method: 'POST',
       body: JSON.stringify({ parts: [{ type: 'text', text }], agent }),
     }),
-  promptSync: (id, text, agent = 'plan') => {
+  promptSync: (id, text, agent = 'plan', model = undefined) => {
     const dir = localStorage.getItem('oc_active_project');
     const headers = { 'Content-Type': 'application/json' };
     if (dir) headers['x-opencode-directory'] = dir;
+    const bodyObj = { parts: [{ type: 'text', text }], agent };
+    if (model) bodyObj.model = model;
     return fetch(`${BASE}/session/${id}/message`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ parts: [{ type: 'text', text }], agent }),
+      body: JSON.stringify(bodyObj),
     });
   },
+  getProviders: () => _fetch(`provider`),
+  getModels: (providerId) => _fetch(`provider/${providerId}/model`),
   abort: (id) => _fetch(`session/${id}/abort`, { method: 'POST' }),
   getStatus: (id) => _fetch(`session/${id}/status`),
   getDiff: (id) => _fetch(`session/${id}/diff`),

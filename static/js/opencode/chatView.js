@@ -192,6 +192,12 @@ export function createChatView(container, { client }) {
     modeSelect.appendChild(planOpt);
     modeSelect.appendChild(codeOpt);
 
+    const modelSelect = document.createElement('select');
+    modelSelect.className = 'oc-mode-toggle';
+    modelSelect.title = 'Select Model';
+    const defaultModelOpt = document.createElement('option'); defaultModelOpt.value = ''; defaultModelOpt.textContent = 'Default Model';
+    modelSelect.appendChild(defaultModelOpt);
+
     const input = document.createElement('textarea');
     input.className = 'oc-prompt-input';
     input.placeholder = 'Type your message... (Enter to send, Shift+Enter for newline)';
@@ -215,7 +221,15 @@ export function createChatView(container, { client }) {
     const inputContainer = document.createElement('div');
     inputContainer.className = 'oc-prompt-input-container';
 
-    inputContainer.appendChild(modeSelect);
+    // Group selectors together
+    const selectorsWrap = document.createElement('div');
+    selectorsWrap.style.display = 'flex';
+    selectorsWrap.style.flexDirection = 'column';
+    selectorsWrap.style.gap = '5px';
+    selectorsWrap.appendChild(modeSelect);
+    selectorsWrap.appendChild(modelSelect);
+
+    inputContainer.appendChild(selectorsWrap);
     inputContainer.appendChild(input);
     inputContainer.appendChild(btnWrapper);
 
@@ -228,6 +242,29 @@ export function createChatView(container, { client }) {
     wrapper.appendChild(emptyState);
     wrapper.appendChild(chatInterface);
     container.appendChild(wrapper);
+
+    // Fetch and populate models
+    (async () => {
+        try {
+            if (client.getProviders && client.getModels) {
+                const providers = await client.getProviders();
+                for (const p of providers) {
+                    const models = await client.getModels(p.id || p.name);
+                    const group = document.createElement('optgroup');
+                    group.label = p.name || p.id;
+                    for (const m of models) {
+                        const opt = document.createElement('option');
+                        opt.value = JSON.stringify({ providerID: p.id || p.name, modelID: m.id || m.name });
+                        opt.textContent = m.name || m.id;
+                        group.appendChild(opt);
+                    }
+                    modelSelect.appendChild(group);
+                }
+            }
+        } catch (err) {
+            console.error('Failed to load opencode models:', err);
+        }
+    })();
 
     // Auto-scroll logic
     messagesArea.addEventListener('scroll', () => {
@@ -260,6 +297,11 @@ export function createChatView(container, { client }) {
         if (!activeSession || !input.value.trim()) return;
         const text = input.value.trim();
         const mode = modeSelect.value;
+        const modelStr = modelSelect.value;
+        let modelObj = undefined;
+        if (modelStr) {
+            try { modelObj = JSON.parse(modelStr); } catch (e) {}
+        }
         
         input.value = '';
         input.disabled = true;
@@ -267,7 +309,7 @@ export function createChatView(container, { client }) {
         try {
             let resp;
             if (client.promptSync) {
-                resp = await client.promptSync(activeSession.id, text, mode);
+                resp = await client.promptSync(activeSession.id, text, mode, modelObj);
             } else {
                 const dir = localStorage.getItem('oc_active_project');
                 const headers = { 'Content-Type': 'application/json' };
@@ -276,7 +318,7 @@ export function createChatView(container, { client }) {
                 resp = await fetch(`/api/opencode/session/${activeSession.id}/message`, {
                     method: 'POST',
                     headers,
-                    body: JSON.stringify({ parts: [{ type: 'text', text: text }], agent: mode })
+                    body: JSON.stringify({ parts: [{ type: 'text', text: text }], agent: mode, model: modelObj })
                 });
             }
             if (!resp.ok) {
