@@ -131,13 +131,16 @@ export const client = {
       method: 'POST',
       body: JSON.stringify({ parts: [{ type: 'text', text }], agent }),
     }),
-  promptSync: (id, text, agent = 'plan') =>
-    // Returns a streaming response — caller uses fetch directly
-    fetch(`${BASE}/session/${id}/message`, {
+  promptSync: (id, text, agent = 'plan') => {
+    const dir = localStorage.getItem('oc_active_project');
+    const headers = { 'Content-Type': 'application/json' };
+    if (dir) headers['x-opencode-directory'] = dir;
+    return fetch(`${BASE}/session/${id}/message`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ parts: [{ type: 'text', text }], agent }),
-    }),
+    });
+  },
   abort: (id) => _fetch(`session/${id}/abort`, { method: 'POST' }),
   getStatus: (id) => _fetch(`session/${id}/status`),
   getDiff: (id) => _fetch(`session/${id}/diff`),

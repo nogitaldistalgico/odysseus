@@ -265,18 +265,28 @@ export function createChatView(container, { client }) {
         input.disabled = true;
         
         try {
-            if (client.promptAsync) {
-                await client.promptAsync(activeSession.id, text, mode);
+            let resp;
+            if (client.promptSync) {
+                resp = await client.promptSync(activeSession.id, text, mode);
             } else {
-                await fetch(`/api/opencode/session/${activeSession.id}/prompt_async`, {
+                const dir = localStorage.getItem('oc_active_project');
+                const headers = { 'Content-Type': 'application/json' };
+                if (dir) headers['x-opencode-directory'] = dir;
+                
+                resp = await fetch(`/api/opencode/session/${activeSession.id}/message`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers,
                     body: JSON.stringify({ parts: [{ type: 'text', text: text }], agent: mode })
                 });
+            }
+            if (!resp.ok) {
+                const errText = await resp.text().catch(() => '');
+                throw new Error(`Server returned ${resp.status}: ${errText}`);
             }
         } catch (err) {
             console.error('Failed to send message:', err);
             input.disabled = false;
+            alert('Failed to send message: ' + err.message);
         }
     };
 
