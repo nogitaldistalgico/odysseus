@@ -253,13 +253,13 @@ export function createChatView(container, { client }) {
         input.disabled = true;
         
         try {
-            if (client.sendMessage) {
-                await client.sendMessage(activeSession.id, { role: 'user', content: text, mode });
+            if (client.promptAsync) {
+                await client.promptAsync(activeSession.id, text, mode);
             } else {
-                await fetch(`/api/opencode/session/${activeSession.id}/message`, {
+                await fetch(`/api/opencode/session/${activeSession.id}/prompt_async`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ role: 'user', content: text, mode })
+                    body: JSON.stringify({ parts: [{ type: 'text', text: text }], agent: mode })
                 });
             }
         } catch (err) {
