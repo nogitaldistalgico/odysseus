@@ -247,22 +247,37 @@ export function createChatView(container, { client }) {
     (async () => {
         try {
             if (client.getProviders && client.getModels) {
-                const providers = await client.getProviders();
-                for (const p of providers) {
-                    const models = await client.getModels(p.id || p.name);
+                const providersRaw = await client.getProviders();
+                const providerList = Array.isArray(providersRaw) ? providersRaw : (providersRaw.providers || providersRaw.data || Object.values(providersRaw) || []);
+                
+                let foundAny = false;
+                for (const p of providerList) {
+                    if (!p || (!p.id && !p.name)) continue;
+                    const modelsRaw = await client.getModels(p.id || p.name);
+                    const modelList = Array.isArray(modelsRaw) ? modelsRaw : (modelsRaw.models || modelsRaw.data || Object.values(modelsRaw) || []);
+                    
+                    if (modelList.length === 0) continue;
+                    
                     const group = document.createElement('optgroup');
                     group.label = p.name || p.id;
-                    for (const m of models) {
+                    for (const m of modelList) {
+                        if (!m || (!m.id && !m.name)) continue;
                         const opt = document.createElement('option');
                         opt.value = JSON.stringify({ providerID: p.id || p.name, modelID: m.id || m.name });
                         opt.textContent = m.name || m.id;
                         group.appendChild(opt);
+                        foundAny = true;
                     }
                     modelSelect.appendChild(group);
+                }
+                
+                if (!foundAny) {
+                    defaultModelOpt.textContent = 'Default (No models found)';
                 }
             }
         } catch (err) {
             console.error('Failed to load opencode models:', err);
+            defaultModelOpt.textContent = 'Default (Load Error)';
         }
     })();
 
