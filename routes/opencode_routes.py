@@ -171,25 +171,32 @@ def setup_opencode_routes():
     @config_router.get("")
     async def get_opencode_config(request: Request):
         """Return Odysseus-side opencode configuration."""
-        require_user_api_aware(request)
+        user = require_user_api_aware(request)
         from src.settings import get_setting
+        from routes.prefs_routes import _load_for_user
+
+        prefs = _load_for_user(user)
+        # Fallback to global settings if user hasn't set personal projects
+        projects = prefs.get("opencode_projects")
+        if projects is None:
+            projects = get_setting("opencode_projects", [])
 
         return {
             "enabled": bool(get_setting("opencode_url", "")),
             "url": get_setting("opencode_url", ""),
-            "projects": get_setting("opencode_projects", []),
+            "projects": projects,
         }
 
     @config_router.post("/projects")
     async def set_opencode_projects(request: Request):
-        """Update the list of project directories."""
-        require_user_api_aware(request)
-        from src.settings import load_settings, save_settings
+        """Update the list of project directories (user-specific)."""
+        user = require_user_api_aware(request)
+        from routes.prefs_routes import _load_for_user, _save_for_user
 
         body = await request.json()
-        settings = load_settings()
-        settings["opencode_projects"] = body.get("projects", [])
-        save_settings(settings)
+        prefs = _load_for_user(user)
+        prefs["opencode_projects"] = body.get("projects", [])
+        _save_for_user(user, prefs)
         return {"ok": True}
 
     @config_router.get("/health")
