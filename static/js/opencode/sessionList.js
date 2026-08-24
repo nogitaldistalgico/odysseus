@@ -86,20 +86,26 @@ export function createSessionList(container, { client, onSessionSelect }) {
             item.dataset.id = session.id;
 
             const title = session.title || 'Untitled';
-            const time = new Date(session.updatedAt || session.createdAt).toLocaleString();
+            const dateStr = session.updatedAt || session.createdAt || session.created_at || session.updated_at;
+            const time = dateStr ? new Date(dateStr).toLocaleString() : 'Just now';
             
             item.innerHTML = `
-                <div class="oc-session-item-header">
-                    ${getStatusBadge(session.status)}
-                    <span class="oc-session-title">${title}</span>
+                <div style="display:flex; justify-content:space-between; align-items:center; width:100%; gap:8px;">
+                    <div style="display:flex; align-items:center; gap:8px; overflow:hidden;">
+                        ${getStatusBadge(session.status)}
+                        <span class="oc-session-title" title="${title}">${title}</span>
+                    </div>
                 </div>
-                <div class="oc-session-time">${time}</div>
+                <div style="font-size:0.75em; opacity:0.6; margin-top:4px;">${time}</div>
             `;
 
             const delBtn = document.createElement('button');
             delBtn.className = 'oc-session-delete';
-            delBtn.textContent = '🗑️';
+            delBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path></svg>';
+            delBtn.style.cssText = 'background:transparent; border:none; color:var(--fg); opacity:0.5; cursor:pointer; padding:4px; margin-left:auto; display:flex;';
             delBtn.title = 'Delete Session';
+            
+            item.querySelector('div').appendChild(delBtn);
             
             delBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();

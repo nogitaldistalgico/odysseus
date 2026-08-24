@@ -72,8 +72,8 @@
     padding: 12px 15px;
     cursor: pointer;
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
+    align-items: flex-start;
     border-left: 3px solid transparent;
 }
 
@@ -135,6 +135,40 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+}
+
+.oc-session-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    border-bottom: 1px solid var(--border);
+    background-color: var(--bg);
+    flex-shrink: 0;
+}
+
+.oc-session-info-title {
+    font-weight: 600;
+    font-size: 1.1em;
+}
+
+.oc-session-info-actions {
+    display: flex;
+    gap: 10px;
+}
+
+.oc-session-info-actions button {
+    background-color: var(--input-bg);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85em;
+}
+
+.oc-session-info-actions button:hover {
+    background-color: var(--hover-bg, rgba(255,255,255,0.1));
 }
 
 .oc-chat-messages {

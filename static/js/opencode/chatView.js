@@ -131,19 +131,26 @@ export function createChatView(container, { client }) {
     let partElements = new Map(); // part_id -> HTMLElement
     let isUserScrolledUp = false;
 
-    // UI Setup
+    // Container wrapper
     const wrapper = document.createElement('div');
-    wrapper.className = 'oc-chat-view-wrapper';
-    
-    // Empty State
+    wrapper.style.display = 'flex';
+    wrapper.style.flexDirection = 'column';
+    wrapper.style.flex = '1';
+    wrapper.style.minHeight = '0';
+    wrapper.style.overflow = 'hidden';
+
+    // Empty state
     const emptyState = document.createElement('div');
     emptyState.className = 'oc-empty-state';
-    emptyState.innerHTML = '<h2>No Session Selected</h2><p>Select a session from the sidebar or create a new one.</p>';
+    emptyState.textContent = 'Select a session or create a new one';
 
     // Main Chat Interface
     const chatInterface = document.createElement('div');
-    chatInterface.className = 'oc-chat-interface';
     chatInterface.style.display = 'none';
+    chatInterface.style.flexDirection = 'column';
+    chatInterface.style.flex = '1';
+    chatInterface.style.minHeight = '0';
+    chatInterface.style.overflow = 'hidden';
 
     // Header
     const header = document.createElement('div');
@@ -205,9 +212,14 @@ export function createChatView(container, { client }) {
     btnWrapper.appendChild(sendBtn);
     btnWrapper.appendChild(abortBtn);
 
-    promptBar.appendChild(modeSelect);
-    promptBar.appendChild(input);
-    promptBar.appendChild(btnWrapper);
+    const inputContainer = document.createElement('div');
+    inputContainer.className = 'oc-prompt-input-container';
+
+    inputContainer.appendChild(modeSelect);
+    inputContainer.appendChild(input);
+    inputContainer.appendChild(btnWrapper);
+
+    promptBar.appendChild(inputContainer);
 
     chatInterface.appendChild(header);
     chatInterface.appendChild(messagesArea);
