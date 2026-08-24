@@ -426,7 +426,7 @@ export function createChatView(container, { client }) {
         } else if (part.type === 'tool') {
             // This is THE main tool part type in OpenCode.
             // It has part.tool (name), part.state (status, input, output, metadata)
-            div.appendChild(renderToolPart(part));
+            div.appendChild(renderToolPart(part, activeSession?.directory));
             
         } else if (part.type === 'reasoning') {
             const details = document.createElement('details');
@@ -479,7 +479,7 @@ export function createChatView(container, { client }) {
             
         } else if (part.type === 'tool_call' || part.type === 'tool_result') {
             // Legacy/v1 format fallback
-            div.appendChild(renderToolPart(part));
+            div.appendChild(renderToolPart(part, activeSession?.directory));
             
         } else {
             console.warn('Odysseus: Unrecognized message part type:', part.type, JSON.stringify(part).substring(0, 200));

@@ -26,13 +26,25 @@ function escapeHtml(str) {
         .replace(/'/g, '&#039;');
 }
 
-/** Strip the working directory prefix from a file path for cleaner display. */
-function stripCwd(filePath, cwd) {
-    if (!filePath || !cwd) return filePath || '';
-    const prefix = cwd.endsWith('/') ? cwd : cwd + '/';
-    if (filePath === cwd) return '';
-    if (filePath.startsWith(prefix)) return filePath.slice(prefix.length);
-    return filePath;
+/** Formats a file path to be compact and readable. */
+function formatPath(filePath, cwd) {
+    if (!filePath) return '';
+    let displayPath = filePath;
+    
+    // 1. Strip CWD if possible
+    if (cwd) {
+        const prefix = cwd.endsWith('/') ? cwd : cwd + '/';
+        if (filePath === cwd) displayPath = '';
+        else if (filePath.startsWith(prefix)) displayPath = filePath.slice(prefix.length);
+    }
+    
+    // 2. If it's still an absolute path or very long, keep only the last 2-3 segments
+    const parts = displayPath.split('/').filter(p => p); // filter empty strings from e.g. leading slash
+    if (parts.length > 3) {
+        displayPath = '.../' + parts.slice(-2).join('/');
+    }
+    
+    return displayPath;
 }
 
 /** Infer a syntax-highlighting language from a filename extension. */
@@ -117,17 +129,17 @@ function toolTarget(toolName, input, cwd) {
         case 'bash': case 'shell': case 'run_command':
             return input.command || input.CommandLine || '';
         case 'read': case 'read_file': case 'view_file':
-            return stripCwd(input.filePath || input.path || input.AbsolutePath || '', cwd);
+            return formatPath(input.filePath || input.path || input.AbsolutePath || '', cwd);
         case 'write': case 'write_to_file': case 'file_write':
-            return stripCwd(input.filePath || input.path || input.TargetFile || '', cwd);
+            return formatPath(input.filePath || input.path || input.TargetFile || '', cwd);
         case 'edit': case 'file_edit': case 'replace_file_content': case 'str_replace_editor':
-            return stripCwd(input.filePath || input.path || input.TargetFile || '', cwd);
+            return formatPath(input.filePath || input.path || input.TargetFile || '', cwd);
         case 'grep': case 'file_search':
             return `"${input.pattern || input.query || input.Query || ''}"`;
         case 'glob': case 'find_by_name':
             return `"${input.pattern || input.Pattern || ''}"`;
         case 'list':
-            return stripCwd(input.path || '', cwd);
+            return formatPath(input.path || '', cwd);
         case 'webfetch': case 'web_fetch':
             return input.url || input.Url || '';
         case 'task':
