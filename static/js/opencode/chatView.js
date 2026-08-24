@@ -417,15 +417,21 @@ export function createChatView(container, { client }) {
         
         if (part.type === 'text') {
             div.appendChild(parseMarkdown(part.text || ''));
-        } else if (part.type === 'tool_call' && renderToolCall) {
-            div.appendChild(renderToolCall(part.tool_call));
-        } else if (part.type === 'tool_result' && renderToolResult) {
-            div.appendChild(renderToolResult(part.tool_result));
+        } else if ((part.type === 'tool_call' || part.toolCall) && renderToolCall) {
+            div.appendChild(renderToolCall(part.tool_call || part.toolCall || part));
+        } else if ((part.type === 'tool_result' || part.toolResult) && renderToolResult) {
+            div.appendChild(renderToolResult(part.tool_result || part.toolResult || part));
         } else if (part.type === 'reasoning') {
             const details = document.createElement('details');
             details.className = 'oc-thinking-block';
             details.innerHTML = `<summary>Thinking...</summary><div class="content">${part.text || ''}</div>`;
             div.appendChild(details);
+        } else if (['bash', 'file_edit', 'file_write', 'file_read', 'shell', 'command', 'grep', 'find'].includes(part.type) || part.toolName || part.name) {
+            // Opencode might use the tool name directly as the part type!
+            // Or if it just has a toolName/name, it's a tool call.
+            div.appendChild(renderToolCall(part));
+        } else {
+            console.warn('Odysseus: Unrecognized message part type:', part.type, part);
         }
         return div;
     };
@@ -438,13 +444,18 @@ export function createChatView(container, { client }) {
         const contentWrap = document.createElement('div');
         contentWrap.className = 'oc-message-content';
 
-        if (msg.parts) {
-            msg.parts.forEach(part => {
-                const pEl = createPartElement(part);
-                partElements.set(part.id, pEl);
-                contentWrap.appendChild(pEl);
-            });
-        }
+        // Sometimes tool calls are interleaved in parts, sometimes separate.
+        const allParts = [];
+        if (msg.parts) allParts.push(...msg.parts);
+        if (msg.tool_calls) allParts.push(...msg.tool_calls);
+        if (msg.toolCalls) allParts.push(...msg.toolCalls);
+        if (msg.tools) allParts.push(...msg.tools);
+
+        allParts.forEach(part => {
+            const pEl = createPartElement(part);
+            if (part.id) partElements.set(part.id, pEl);
+            contentWrap.appendChild(pEl);
+        });
 
         msgEl.appendChild(contentWrap);
         messagesArea.appendChild(msgEl);
@@ -521,8 +532,9 @@ export function createChatView(container, { client }) {
                 }
             } else if (event.type === 'message.part.updated') {
                 const pEl = partElements.get(data.part.id);
-                if (pEl && data.part.type === 'tool_result' && updateToolResult) {
-                     updateToolResult(pEl, data.part.tool_result);
+                if (pEl && updateToolResult) {
+                     // Opencode might use tool_result as type, or we just pass the part directly.
+                     updateToolResult(pEl, data.part.tool_result || data.part);
                 }
             } else if (event.type === 'permission.created' && renderPermission) {
                 const pEl = renderPermission(data, client);
