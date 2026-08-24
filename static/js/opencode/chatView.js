@@ -248,7 +248,15 @@ export function createChatView(container, { client }) {
         try {
             if (client.getProviders) {
                 const providersRaw = await client.getProviders();
-                const providerList = providersRaw.all || providersRaw.providers || providersRaw.data || (Array.isArray(providersRaw) ? providersRaw : Object.values(providersRaw)) || [];
+                let providerList = [];
+                
+                if (providersRaw && providersRaw.all && Array.isArray(providersRaw.connected)) {
+                    // OpenCode V2: only show models for providers the user has actually connected
+                    const connectedIds = providersRaw.connected;
+                    providerList = providersRaw.all.filter(p => connectedIds.includes(p.id));
+                } else {
+                    providerList = providersRaw.all || providersRaw.providers || providersRaw.data || (Array.isArray(providersRaw) ? providersRaw : Object.values(providersRaw)) || [];
+                }
                 
                 let foundAny = false;
                 for (const p of providerList) {
