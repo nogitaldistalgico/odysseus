@@ -1319,6 +1319,12 @@ async def _shutdown_event():
         await mcp_manager.disconnect_all()
     except Exception as e:
         logger.warning(f"MCP shutdown error: {e}")
+    # Release the pooled opencode upstream connections
+    try:
+        from routes.opencode_routes import close_opencode_proxy
+        await close_opencode_proxy()
+    except Exception as e:
+        logger.warning(f"opencode proxy shutdown error: {e}")
     logger.info("Application shutdown complete")
 
 

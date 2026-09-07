@@ -74,6 +74,10 @@ _PASSIVE_PREFIXES = (
     "/api/chat/stream_status",
     "/api/health",
     "/api/prefs",
+    # Long-lived opencode SSE bus. It reconnects on its own schedule, so
+    # treating each reconnect as foreground activity would keep pre-empting
+    # background tasks for a stream nobody is actively interacting with.
+    "/api/opencode/event",
 )
 
 
