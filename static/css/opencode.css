@@ -1140,6 +1140,20 @@
 
 .oc-scope .oc-prompt-input:hover { background: transparent; }
 
+/* White-on-accent reads fine against a dark ground but not against a light
+   one — #00aaff with white text measures 2.56:1. Darken the fill for the
+   light theme only, so the dark theme keeps matching the rest of the app.
+   Same correction as static/css/fitness.css. */
+:root.light .oc-scope .oc-btn-approve,
+:root.light .oc-scope .oc-send-btn {
+  background: color-mix(in srgb, var(--oc-accent) 62%, #000);
+  border-color: color-mix(in srgb, var(--oc-accent) 62%, #000);
+}
+:root.light .oc-scope .oc-btn-approve:hover:not(:disabled),
+:root.light .oc-scope .oc-send-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--oc-accent) 50%, #000);
+}
+
 /* ── Motion ─────────────────────────────────────────────────── */
 
 @keyframes oc-pulse {
