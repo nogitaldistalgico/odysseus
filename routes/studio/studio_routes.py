@@ -410,14 +410,24 @@ async def _fetch_studio_models():
                 entry["supports_video_editing"] = supports_video_editing(c)
                 entry["pricing"] = c.get("pricing_skus", {})
                 
-                # Character reference / soft reference.
+                # ------------------------------------------------------
+                # Capability flags are TRI-STATE: True / False / None.
+                # None means "OpenRouter tells us nothing", which is not the
+                # same as "unsupported" — a client must not filter a model out
+                # on None. Two separate capabilities live here and used to be
+                # conflated:
                 #
-                # Structured signals first: OpenRouter reports an
-                # `input_references` entry in supported_parameters for models
-                # that take reference images, which is authoritative. Reading
-                # the prose description was the only check before, so the
-                # capability silently flipped whenever a description got
-                # reworded.
+                #   supports_frame_images     — first/last frame conditioning
+                #   supports_character_reference — the character library
+                #
+                # gating a reference-image UI on the character flag hid frame
+                # conditioning on models that support it.
+                # ------------------------------------------------------
+                frame_images = c.get("supported_frame_images")
+                entry["supports_frame_images"] = (
+                    None if frame_images is None else bool(frame_images)
+                )
+
                 supported_params = c.get("supported_parameters") or []
                 if isinstance(supported_params, dict):
                     supported_params = list(supported_params.keys())
@@ -425,29 +435,33 @@ async def _fetch_studio_models():
                 allowed_passthrough = {
                     str(x).lower() for x in (c.get("allowed_passthrough_parameters") or [])
                 }
+                ref_params = {"input_references", "reference_images", "references", "images"}
 
-                supports_refs = bool(
-                    {"input_references", "reference_images", "references"}
-                    & (param_names | allowed_passthrough)
-                )
+                supports_refs: Optional[bool] = None
+                max_refs: Optional[int] = None
 
-                max_refs = 0
                 raw_refs = c.get("input_references")
                 if isinstance(raw_refs, dict) and raw_refs.get("max") is not None:
                     max_refs = int(raw_refs["max"])
                     supports_refs = max_refs > 0
-
-                if not supports_refs:
-                    # Fallback: the old description sniffing, kept so models
-                    # OpenRouter has not annotated yet still work.
+                elif ref_params & (param_names | allowed_passthrough):
+                    supports_refs = True
+                else:
+                    # No structured signal exists for this in OpenRouter's video
+                    # catalogue today, so the description is all there is. A hit
+                    # is meaningful; a miss is NOT evidence of absence, so it
+                    # stays None rather than becoming a false negative — with
+                    # `False` most of the catalogue would be wrongly excluded.
                     desc = str(c.get("description", "")).lower()
-                    supports_refs = any(kw in desc for kw in [
+                    if any(kw in desc for kw in [
                         "reference-to-video", "reference-based", "reference images",
                         "reference-conditioned", "character consistency",
-                    ])
+                    ]):
+                        supports_refs = True
 
                 entry["supports_character_reference"] = supports_refs
-                entry["max_image_references"] = max_refs or (10 if supports_refs else 0)
+                # Only a number we actually know; not derived from the flag.
+                entry["max_image_references"] = max_refs
                 
                 videos.append(entry)
                 
@@ -713,20 +727,28 @@ class MediaPatchRequest(BaseModel):
     prompt: Optional[str] = None
 
 
-@router.patch("/api/studio/{media_id}")
-async def update_studio_media(request: Request, media_id: str, req: MediaPatchRequest):
-    """Update mutable fields on a library item.
+def _lookup_owned_media(db, media_id: str, user: Optional[str]):
+    """Resolve a library item by id *or* filename, enforcing ownership.
 
-    `favorite` existed on the model and was returned by the API, but there was
-    no way to set it — the flag was effectively dead.
+    GET /api/studio/media/{filename} keys on the filename while clients
+    naturally hold the id, so both are accepted rather than making callers
+    guess which one a given verb wants.
     """
+    m = (
+        db.query(StudioMedia)
+        .filter((StudioMedia.id == media_id) | (StudioMedia.filename == media_id))
+        .first()
+    )
+    if not m or (m.owner and m.owner != user):
+        raise HTTPException(404, "Media not found")
+    return m
+
+
+async def _update_studio_media(request: Request, media_id: str, req: MediaPatchRequest):
     user = require_studio_privilege(request)
     db = SessionLocal()
     try:
-        m = db.query(StudioMedia).filter(StudioMedia.id == media_id).first()
-        if not m or (m.owner and m.owner != user):
-            raise HTTPException(404, "Media not found")
-
+        m = _lookup_owned_media(db, media_id, user)
         if req.favorite is not None:
             m.favorite = req.favorite
         if req.prompt is not None:
@@ -737,19 +759,50 @@ async def update_studio_media(request: Request, media_id: str, req: MediaPatchRe
         db.close()
 
 
-@router.delete("/api/studio/{media_id}")
-async def delete_studio_media(request: Request, media_id: str):
+@router.patch("/api/studio/media/{media_id}")
+async def update_studio_media(request: Request, media_id: str, req: MediaPatchRequest):
+    """Update mutable fields on a library item.
+
+    `favorite` existed on the model and was returned by the API, but there was
+    no way to set it — the flag was effectively dead.
+    """
+    return await _update_studio_media(request, media_id, req)
+
+
+@router.patch("/api/studio/{media_id}", include_in_schema=False)
+async def update_studio_media_legacy(request: Request, media_id: str, req: MediaPatchRequest):
+    """Deprecated alias. Prefer PATCH /api/studio/media/{media_id}."""
+    return await _update_studio_media(request, media_id, req)
+
+
+async def _delete_studio_media(request: Request, media_id: str):
     user = require_studio_privilege(request)
     db = SessionLocal()
     try:
-        m = db.query(StudioMedia).filter(StudioMedia.id == media_id).first()
-        if not m or (m.owner and m.owner != user):
-            raise HTTPException(404, "Media not found")
+        m = _lookup_owned_media(db, media_id, user)
         m.is_active = False
         db.commit()
         return {"status": "ok"}
     finally:
         db.close()
+
+
+@router.delete("/api/studio/media/{media_id}")
+async def delete_studio_media(request: Request, media_id: str):
+    """Soft-delete a library item (the file is kept on disk)."""
+    return await _delete_studio_media(request, media_id)
+
+
+@router.delete("/api/studio/{media_id}", include_in_schema=False)
+async def delete_studio_media_legacy(request: Request, media_id: str):
+    """Deprecated alias.
+
+    A single-segment catch-all directly under /api/studio sits alongside the
+    named collections (/models, /library, /characters, /upload, ...), so a
+    future DELETE /api/studio/<collection> would land here as
+    media_id="<collection>". Prefer DELETE /api/studio/media/{media_id}.
+    """
+    return await _delete_studio_media(request, media_id)
 
 @router.post("/api/studio/generate/photo")
 async def generate_photo(request: Request, req: PhotoGenRequest):
