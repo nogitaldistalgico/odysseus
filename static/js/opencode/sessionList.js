@@ -1,6 +1,17 @@
 /**
  * @fileoverview Sidebar panel showing all opencode sessions for the selected project.
+ *
+ * Session objects come straight from opencode's `Session` schema: identity in
+ * `id`/`title`, timestamps in `time.{created,updated}` (unix ms), and *no*
+ * status field — liveness arrives separately via `session.status` events.
  */
+
+/** @type {Record<string, {label: string, cls: string}>} */
+const STATUS_META = {
+    running: { label: 'Running', cls: 'running' },
+    retry: { label: 'Retrying', cls: 'retry' },
+    idle: { label: 'Idle', cls: 'idle' },
+};
 
 /**
  * Creates a session list component.
@@ -8,12 +19,13 @@
  * @param {Object} options - Configuration options.
  * @param {Object} options.client - The OpenCodeClient instance.
  * @param {Function} options.onSessionSelect - Callback when a session is selected.
- * @returns {Object} Session list API (refresh, setDirectory, handleEvent, destroy).
+ * @returns {Object} Session list API (refresh, handleEvent, destroy).
  */
 export function createSessionList(container, { client, onSessionSelect }) {
-    let currentDirectory = null;
     let activeSessionId = null;
     let sessions = [];
+    /** sessionID -> SessionStatus.type, fed by the event stream. */
+    const statuses = new Map();
 
     // UI Structure
     const wrapper = document.createElement('div');
@@ -21,19 +33,19 @@ export function createSessionList(container, { client, onSessionSelect }) {
 
     const newBtn = document.createElement('button');
     newBtn.className = 'oc-new-session-btn';
-    newBtn.textContent = 'New Session';
-    
+    newBtn.innerHTML = '<span class="oc-plus" aria-hidden="true">+</span> New session';
+
     const listContainer = document.createElement('div');
     listContainer.className = 'oc-session-list';
 
     const emptyState = document.createElement('div');
     emptyState.className = 'oc-session-empty-state';
     emptyState.style.display = 'none';
-    emptyState.textContent = 'No sessions found.';
+    emptyState.textContent = 'No sessions yet.';
 
     const loadingState = document.createElement('div');
     loadingState.className = 'oc-session-loading-skeleton';
-    loadingState.textContent = 'Loading...';
+    loadingState.textContent = 'Loading…';
 
     wrapper.appendChild(newBtn);
     wrapper.appendChild(loadingState);
@@ -41,22 +53,20 @@ export function createSessionList(container, { client, onSessionSelect }) {
     wrapper.appendChild(emptyState);
     container.appendChild(wrapper);
 
-    /**
-     * Get the badge style based on status.
-     * @param {string} status 
-     * @returns {string} HTML for the badge
-     */
-    const getStatusBadge = (status) => {
-        let symbol = '🟢';
-        let cls = 'idle';
-        if (status === 'busy') {
-            symbol = '🔵';
-            cls = 'busy'; // CSS can use this class to pulse
-        } else if (status === 'error') {
-            symbol = '🔴';
-            cls = 'error';
-        }
-        return `<span class="oc-session-status ${cls}" title="${status}">${symbol}</span>`;
+    /** opencode stores times as unix milliseconds under `time`. */
+    const lastActivity = (s) => s?.time?.updated || s?.time?.created || 0;
+
+    const relativeTime = (ms) => {
+        if (!ms) return '';
+        const diff = Date.now() - ms;
+        const min = Math.round(diff / 60000);
+        if (min < 1) return 'just now';
+        if (min < 60) return `${min}m ago`;
+        const hrs = Math.round(min / 60);
+        if (hrs < 24) return `${hrs}h ago`;
+        const days = Math.round(hrs / 24);
+        if (days < 7) return `${days}d ago`;
+        return new Date(ms).toLocaleDateString();
     };
 
     /**
@@ -64,7 +74,7 @@ export function createSessionList(container, { client, onSessionSelect }) {
      */
     const renderList = () => {
         listContainer.innerHTML = '';
-        
+
         if (sessions.length === 0) {
             listContainer.style.display = 'none';
             emptyState.style.display = 'block';
@@ -74,50 +84,54 @@ export function createSessionList(container, { client, onSessionSelect }) {
         listContainer.style.display = 'block';
         emptyState.style.display = 'none';
 
-        // Sort by last activity (most recent first)
-        sessions.sort((a, b) => new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt));
+        sessions.sort((a, b) => lastActivity(b) - lastActivity(a));
 
         sessions.forEach(session => {
             const item = document.createElement('div');
             item.className = 'oc-session-item';
-            if (session.id === activeSessionId) {
-                item.classList.add('active');
-            }
+            if (session.id === activeSessionId) item.classList.add('active');
             item.dataset.id = session.id;
 
-            const title = session.title || 'Untitled';
-            const dateStr = session.updatedAt || session.createdAt || session.created_at || session.updated_at;
-            const time = dateStr ? new Date(dateStr).toLocaleString() : 'Just now';
-            
-            item.innerHTML = `
-                <div style="display:flex; justify-content:space-between; align-items:center; width:100%; gap:8px;">
-                    <div style="display:flex; align-items:center; gap:8px; overflow:hidden;">
-                        ${getStatusBadge(session.status)}
-                        <span class="oc-session-title" title="${title}">${title}</span>
-                    </div>
-                </div>
-                <div style="font-size:0.75em; opacity:0.6; margin-top:4px;">${time}</div>
-            `;
+            const row = document.createElement('div');
+            row.className = 'oc-session-row';
+
+            const status = statuses.get(session.id) || 'idle';
+            const meta = STATUS_META[status] || STATUS_META.idle;
+            const dot = document.createElement('span');
+            dot.className = `oc-session-status ${meta.cls}`;
+            dot.title = meta.label;
+
+            // textContent, not innerHTML: session titles are model-generated,
+            // so interpolating them into markup is an injection vector.
+            const title = document.createElement('span');
+            title.className = 'oc-session-title';
+            title.textContent = session.title || 'Untitled';
+            title.title = session.title || 'Untitled';
 
             const delBtn = document.createElement('button');
             delBtn.className = 'oc-session-delete';
-            delBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path></svg>';
-            delBtn.style.cssText = 'background:transparent; border:none; color:var(--fg); opacity:0.5; cursor:pointer; padding:4px; margin-left:auto; display:flex;';
-            delBtn.title = 'Delete Session';
-            
-            item.querySelector('div').appendChild(delBtn);
-            
+            delBtn.type = 'button';
+            delBtn.title = 'Delete session';
+            delBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>';
+
+            row.appendChild(dot);
+            row.appendChild(title);
+            row.appendChild(delBtn);
+
+            const time = document.createElement('div');
+            time.className = 'oc-session-time';
+            time.textContent = relativeTime(lastActivity(session));
+
+            item.appendChild(row);
+            item.appendChild(time);
+
             delBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 if (delBtn.dataset.confirm === 'true') {
-                    // Confirmed delete
                     try {
-                        if (client.deleteSession) {
-                            await client.deleteSession(session.id);
-                        } else {
-                            await fetch(`/api/opencode/session/${session.id}`, { method: 'DELETE' });
-                        }
+                        await client.deleteSession(session.id);
                         sessions = sessions.filter(s => s.id !== session.id);
+                        statuses.delete(session.id);
                         if (activeSessionId === session.id) {
                             activeSessionId = null;
                             if (onSessionSelect) onSessionSelect(null);
@@ -127,30 +141,23 @@ export function createSessionList(container, { client, onSessionSelect }) {
                         console.error('Error deleting session:', err);
                     }
                 } else {
-                    // Show confirmation inline
                     delBtn.dataset.confirm = 'true';
                     delBtn.textContent = 'Sure?';
                     delBtn.classList.add('confirming');
-                    
-                    // Reset after 3 seconds
                     setTimeout(() => {
-                        if (item.contains(delBtn)) {
+                        if (delBtn.isConnected) {
                             delBtn.dataset.confirm = 'false';
-                            delBtn.textContent = '🗑️';
                             delBtn.classList.remove('confirming');
+                            renderList();
                         }
                     }, 3000);
                 }
             });
 
-            item.appendChild(delBtn);
-
             item.addEventListener('click', () => {
                 activeSessionId = session.id;
                 renderList();
-                if (onSessionSelect) {
-                    onSessionSelect(session);
-                }
+                if (onSessionSelect) onSessionSelect(session);
             });
 
             listContainer.appendChild(item);
@@ -159,25 +166,25 @@ export function createSessionList(container, { client, onSessionSelect }) {
 
     /**
      * Refresh the session list from the server.
+     * The active project travels as a query param added by the client module.
      */
     const refresh = async () => {
-        if (!currentDirectory) return;
-        
         loadingState.style.display = 'block';
         listContainer.style.display = 'none';
         emptyState.style.display = 'none';
 
         try {
-            let data;
-            if (client.listSessions) {
-                data = await client.listSessions(currentDirectory);
-            } else {
-                const res = await fetch(`/api/opencode/session?directory=${encodeURIComponent(currentDirectory)}`);
-                if (!res.ok) throw new Error(`HTTP error ${res.status}`);
-                data = await res.json();
-            }
-            sessions = Array.isArray(data) ? data : (data.sessions || []);
+            const data = await client.listSessions();
+            sessions = Array.isArray(data) ? data : (data?.sessions || []);
             loadingState.style.display = 'none';
+
+            // Seed liveness once per refresh; events keep it current afterwards.
+            try {
+                const map = await client.getStatus();
+                statuses.clear();
+                Object.entries(map || {}).forEach(([id, st]) => statuses.set(id, st?.type || 'idle'));
+            } catch { /* status is a nicety, not a requirement */ }
+
             renderList();
         } catch (err) {
             console.error('Failed to load sessions:', err);
@@ -187,29 +194,17 @@ export function createSessionList(container, { client, onSessionSelect }) {
         }
     };
 
-    // Event Listeners
     newBtn.addEventListener('click', async () => {
-        if (!currentDirectory) return;
-        
         try {
             newBtn.disabled = true;
-            let newSession;
-            if (client.createSession) {
-                newSession = await client.createSession(currentDirectory);
-            } else {
-                const res = await fetch('/api/opencode/session', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ directory: currentDirectory })
-                });
-                if (!res.ok) throw new Error(`HTTP error ${res.status}`);
-                newSession = await res.json();
-            }
-            sessions.push(newSession);
-            activeSessionId = newSession.id;
-            renderList();
-            if (onSessionSelect) {
-                onSessionSelect(newSession);
+            // No title: opencode names the session from the first prompt.
+            const created = await client.createSession();
+            const session = created?.info || created;
+            if (session?.id) {
+                sessions.push(session);
+                activeSessionId = session.id;
+                renderList();
+                if (onSessionSelect) onSessionSelect(session);
             }
         } catch (err) {
             console.error('Failed to create session:', err);
@@ -219,47 +214,65 @@ export function createSessionList(container, { client, onSessionSelect }) {
     });
 
     return {
-        /**
-         * Refresh the session list.
-         */
         refresh,
-        /**
-         * Set the active directory and reload sessions.
-         * @param {string} dir 
-         */
-        setDirectory(dir) {
-            currentDirectory = dir;
-            activeSessionId = null;
-            refresh();
+
+        /** @returns {string|null} */
+        getActiveSessionId() {
+            return activeSessionId;
         },
+
         /**
-         * Handle SSE events to update the list live.
-         * @param {Object} event 
+         * Apply one opencode event.
+         *
+         * Payloads follow packages/schema/src/v1/session.ts: session lifecycle
+         * events carry `{sessionID, info}` (the session lives in `info`, not at
+         * the top level) and liveness arrives as `session.status`/`session.idle`.
+         * @param {{type: string, properties: Object}} event
          */
         handleEvent(event) {
-            if (!event || !event.type || !event.data) return;
-            const data = event.data;
+            if (!event || !event.type) return;
+            const p = event.properties || {};
 
-            if (event.type === 'session.created') {
-                if (data.directory === currentDirectory && !sessions.find(s => s.id === data.id)) {
-                    sessions.push(data);
+            switch (event.type) {
+                case 'session.created':
+                case 'session.updated': {
+                    const info = p.info;
+                    if (!info?.id) return;
+                    const idx = sessions.findIndex(s => s.id === info.id);
+                    if (idx === -1) sessions.push(info);
+                    else sessions[idx] = { ...sessions[idx], ...info };
                     renderList();
+                    break;
                 }
-            } else if (event.type === 'session.updated' || event.type === 'session.status') {
-                const idx = sessions.findIndex(s => s.id === data.id);
-                if (idx !== -1) {
-                    sessions[idx] = { ...sessions[idx], ...data };
+                case 'session.deleted': {
+                    const id = p.sessionID || p.info?.id;
+                    if (!id) return;
+                    sessions = sessions.filter(s => s.id !== id);
+                    statuses.delete(id);
+                    if (activeSessionId === id) {
+                        activeSessionId = null;
+                        if (onSessionSelect) onSessionSelect(null);
+                    }
                     renderList();
+                    break;
                 }
-            } else if (event.type === 'session.deleted') {
-                sessions = sessions.filter(s => s.id !== data.id);
-                if (activeSessionId === data.id) {
-                    activeSessionId = null;
-                    if (onSessionSelect) onSessionSelect(null);
+                case 'session.status': {
+                    if (!p.sessionID) return;
+                    statuses.set(p.sessionID, p.status?.type || 'idle');
+                    renderList();
+                    break;
                 }
-                renderList();
+                case 'session.idle': {
+                    if (!p.sessionID) return;
+                    statuses.set(p.sessionID, 'idle');
+                    renderList();
+                    break;
+                }
+                default:
+                    break;
             }
         },
+
         /**
          * Clean up DOM elements.
          */

@@ -28,8 +28,7 @@ function parseMarkdown(text) {
         if (codeBlockMatch) {
             const lang = codeBlockMatch[1] || '';
             const code = codeBlockMatch[2];
-            const codeElem = renderCodeBlock ? renderCodeBlock(code, lang) : document.createTextNode(`Code: ${code}`);
-            container.appendChild(codeElem);
+            container.appendChild(renderCodeBlock(code, lang));
             return;
         }
 
@@ -130,6 +129,12 @@ export function createChatView(container, { client }) {
     let messageElements = new Map(); // id -> HTMLElement
     let partElements = new Map(); // part_id -> HTMLElement
     let isUserScrolledUp = false;
+    // opencode's revert endpoint needs a messageID; the last user turn is the
+    // only anchor a "revert" button can sensibly mean.
+    let lastUserMessageID = null;
+    // partID -> the last full Part object, so message.part.delta can append to
+    // the underlying text and re-render rather than mutating rendered markup.
+    const partData = new Map();
 
     // Container wrapper
     const wrapper = document.createElement('div');
@@ -157,6 +162,13 @@ export function createChatView(container, { client }) {
     header.className = 'oc-session-info';
     const headerTitle = document.createElement('span');
     headerTitle.className = 'oc-session-info-title';
+
+    const headerStatus = document.createElement('span');
+    headerStatus.className = 'oc-session-status-chip';
+
+    const errorBar = document.createElement('div');
+    errorBar.className = 'oc-error-bar';
+    errorBar.setAttribute('role', 'status');
     
     const headerActions = document.createElement('div');
     headerActions.className = 'oc-session-info-actions';
@@ -175,6 +187,7 @@ export function createChatView(container, { client }) {
     headerActions.appendChild(revertBtn);
 
     header.appendChild(headerTitle);
+    header.appendChild(headerStatus);
     header.appendChild(headerActions);
 
     // Messages Area
@@ -185,12 +198,15 @@ export function createChatView(container, { client }) {
     const promptBar = document.createElement('div');
     promptBar.className = 'oc-prompt-bar';
 
+    // Agents are discovered from opencode (GET /agent) rather than hardcoded:
+    // the built-ins are "build" and "plan", and users can define their own.
     const modeSelect = document.createElement('select');
     modeSelect.className = 'oc-mode-toggle';
+    modeSelect.title = 'Agent';
+    const buildOpt = document.createElement('option'); buildOpt.value = 'build'; buildOpt.textContent = 'Build';
     const planOpt = document.createElement('option'); planOpt.value = 'plan'; planOpt.textContent = 'Plan';
-    const codeOpt = document.createElement('option'); codeOpt.value = 'coder'; codeOpt.textContent = 'Coder';
+    modeSelect.appendChild(buildOpt);
     modeSelect.appendChild(planOpt);
-    modeSelect.appendChild(codeOpt);
 
     const modelSelect = document.createElement('select');
     modelSelect.className = 'oc-mode-toggle';
@@ -221,21 +237,25 @@ export function createChatView(container, { client }) {
     const inputContainer = document.createElement('div');
     inputContainer.className = 'oc-prompt-input-container';
 
-    // Group selectors together
+    // Agent + model sit on their own row above the text field, so the
+    // composer reads as one control instead of a cramped left column.
     const selectorsWrap = document.createElement('div');
-    selectorsWrap.style.display = 'flex';
-    selectorsWrap.style.flexDirection = 'column';
-    selectorsWrap.style.gap = '5px';
+    selectorsWrap.className = 'oc-composer-tools';
     selectorsWrap.appendChild(modeSelect);
     selectorsWrap.appendChild(modelSelect);
 
+    const composerRow = document.createElement('div');
+    composerRow.className = 'oc-composer-row';
+    composerRow.appendChild(input);
+    composerRow.appendChild(btnWrapper);
+
     inputContainer.appendChild(selectorsWrap);
-    inputContainer.appendChild(input);
-    inputContainer.appendChild(btnWrapper);
+    inputContainer.appendChild(composerRow);
 
     promptBar.appendChild(inputContainer);
 
     chatInterface.appendChild(header);
+    chatInterface.appendChild(errorBar);
     chatInterface.appendChild(messagesArea);
     chatInterface.appendChild(promptBar);
     
@@ -243,11 +263,34 @@ export function createChatView(container, { client }) {
     wrapper.appendChild(chatInterface);
     container.appendChild(wrapper);
 
+    // Populate the agent list from the server, keeping build/plan as fallback.
+    (async () => {
+        try {
+            const agents = await client.listAgents();
+            const primary = (Array.isArray(agents) ? agents : [])
+                .filter(a => a && a.name && a.mode !== 'subagent' && a.hidden !== true);
+            if (primary.length) {
+                const previous = modeSelect.value;
+                modeSelect.innerHTML = '';
+                for (const a of primary) {
+                    const opt = document.createElement('option');
+                    opt.value = a.name;
+                    opt.textContent = a.name.charAt(0).toUpperCase() + a.name.slice(1);
+                    if (a.description) opt.title = a.description;
+                    modeSelect.appendChild(opt);
+                }
+                if (primary.some(a => a.name === previous)) modeSelect.value = previous;
+            }
+        } catch (err) {
+            console.warn('[opencode] agent list unavailable, using defaults:', err);
+        }
+    })();
+
     // Fetch and populate models
     (async () => {
         try {
-            if (client.getProviders) {
-                const providersRaw = await client.getProviders();
+            if (client.listProviders) {
+                const providersRaw = await client.listProviders();
                 let providerList = [];
                 
                 if (providersRaw && providersRaw.all && Array.isArray(providersRaw.connected)) {
@@ -309,14 +352,25 @@ export function createChatView(container, { client }) {
      * Set session state (busy/idle)
      */
     const setSessionState = (status) => {
-        const isBusy = status === 'busy';
+        // SessionStatus.type is "idle" | "running" | "retry".
+        const isBusy = status === 'running' || status === 'retry';
         input.disabled = isBusy;
         sendBtn.disabled = isBusy;
-        abortBtn.style.display = isBusy ? 'inline-block' : 'none';
-        sendBtn.style.display = isBusy ? 'none' : 'inline-block';
-        if (headerTitle) {
-            headerTitle.textContent = `${activeSession?.title || 'Untitled'} - ${status}`;
+        abortBtn.style.display = isBusy ? 'inline-flex' : 'none';
+        sendBtn.style.display = isBusy ? 'none' : 'inline-flex';
+        if (headerTitle) headerTitle.textContent = activeSession?.title || 'Untitled';
+        if (headerStatus) {
+            headerStatus.textContent = isBusy ? (status === 'retry' ? 'retrying' : 'working…') : '';
+            headerStatus.dataset.state = isBusy ? 'busy' : 'idle';
         }
+    };
+
+    /** Non-blocking inline error banner (alert() froze the whole view). */
+    const showError = (msg) => {
+        errorBar.textContent = msg;
+        errorBar.classList.add('visible');
+        clearTimeout(showError._t);
+        showError._t = setTimeout(() => errorBar.classList.remove('visible'), 6000);
     };
 
     // Actions
@@ -331,31 +385,18 @@ export function createChatView(container, { client }) {
         }
         
         input.value = '';
-        input.disabled = true;
-        
+        setSessionState('running');
+
         try {
-            let resp;
-            if (client.promptSync) {
-                resp = await client.promptSync(activeSession.id, text, mode, modelObj);
-            } else {
-                const dir = localStorage.getItem('oc_active_project');
-                const headers = { 'Content-Type': 'application/json' };
-                if (dir) headers['x-opencode-directory'] = dir;
-                
-                resp = await fetch(`/api/opencode/session/${activeSession.id}/message`, {
-                    method: 'POST',
-                    headers,
-                    body: JSON.stringify({ parts: [{ type: 'text', text: text }], agent: mode, model: modelObj })
-                });
-            }
-            if (!resp.ok) {
-                const errText = await resp.text().catch(() => '');
-                throw new Error(`Server returned ${resp.status}: ${errText}`);
-            }
+            // prompt_async returns 204 immediately; the assistant's reply
+            // arrives incrementally over the event stream. The old synchronous
+            // POST /message blocked the UI for the whole generation instead.
+            await client.promptAsync(activeSession.id, text, mode, modelObj);
         } catch (err) {
             console.error('Failed to send message:', err);
-            input.disabled = false;
-            alert('Failed to send message: ' + err.message);
+            input.value = text;
+            setSessionState('idle');
+            showError(`Failed to send message: ${err.message}`);
         }
     };
 
@@ -371,53 +412,122 @@ export function createChatView(container, { client }) {
     abortBtn.addEventListener('click', async () => {
         if (!activeSession) return;
         try {
-            await fetch(`/api/opencode/session/${activeSession.id}/abort`, { method: 'POST' });
+            await client.abort(activeSession.id);
         } catch(e) {
             console.error('Abort failed', e);
+            showError(`Abort failed: ${e.message}`);
         }
     });
+
+    /** Minimal side panel used for diff and todo output. */
+    const openPanel = (heading, buildBody) => {
+        const panel = document.createElement('div');
+        // `oc-scope` carries the view's design tokens and the specificity boost
+        // that beats style.css's global element rules; the panel mounts on
+        // document.body, outside #opencode-modal, so it needs its own copy.
+        panel.className = 'oc-panel oc-scope';
+        const card = document.createElement('div');
+        card.className = 'oc-panel-card';
+        const head = document.createElement('div');
+        head.className = 'oc-panel-head';
+        const h = document.createElement('h3');
+        h.textContent = heading;
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'oc-panel-close';
+        close.setAttribute('aria-label', 'Close');
+        close.textContent = '✕';
+        head.appendChild(h);
+        head.appendChild(close);
+        const body = document.createElement('div');
+        body.className = 'oc-panel-body';
+        buildBody(body);
+        card.appendChild(head);
+        card.appendChild(body);
+        panel.appendChild(card);
+        document.body.appendChild(panel);
+        const dismiss = () => panel.remove();
+        close.addEventListener('click', dismiss);
+        panel.addEventListener('click', (e) => { if (e.target === panel) dismiss(); });
+        return panel;
+    };
 
     diffBtn.addEventListener('click', async () => {
         if (!activeSession) return;
         try {
-            const res = await fetch(`/api/opencode/session/${activeSession.id}/diff`);
-            const diffData = await res.json();
-            // Show diff modal
-            if (renderDiff) {
-                // assume renderDiff handles showing it, or we create a modal here
-                const diffElem = renderDiff(diffData.diff || '');
-                const modal = document.createElement('div');
-                modal.className = 'modal oc-diff-modal';
-                modal.innerHTML = `<div class="modal-content"><div class="modal-header"><h3>Diff</h3><button class="close">x</button></div><div class="modal-body"></div></div>`;
-                modal.querySelector('.modal-body').appendChild(diffElem);
-                document.body.appendChild(modal);
-                modal.querySelector('.close').onclick = () => modal.remove();
-                modal.style.display = 'block';
-            }
-        } catch(e) { console.error('Diff error', e); }
+            // GET /session/:id/diff answers with FileDiff.Info[], not a string.
+            const diffs = await client.getDiff(activeSession.id);
+            const list = Array.isArray(diffs) ? diffs : (diffs?.diff || []);
+            openPanel('Changes', (body) => {
+                if (!list.length) {
+                    const p = document.createElement('p');
+                    p.className = 'oc-panel-empty';
+                    p.textContent = 'No changes in this session.';
+                    body.appendChild(p);
+                    return;
+                }
+                for (const d of list) {
+                    const file = document.createElement('div');
+                    file.className = 'oc-diff-file';
+                    const name = document.createElement('div');
+                    name.className = 'oc-diff-file-name';
+                    name.textContent = d.file || d.path || 'file';
+                    file.appendChild(name);
+                    const patch = d.patch || d.diff || '';
+                    file.appendChild(renderDiff(typeof patch === 'string' ? patch : JSON.stringify(patch, null, 2)));
+                    body.appendChild(file);
+                }
+            });
+        } catch(e) {
+            console.error('Diff error', e);
+            showError(`Could not load changes: ${e.message}`);
+        }
     });
 
     todoBtn.addEventListener('click', async () => {
         if (!activeSession) return;
         try {
-            const res = await fetch(`/api/opencode/session/${activeSession.id}/todo`);
-            const data = await res.json();
-            const modal = document.createElement('div');
-            modal.className = 'modal oc-todo-panel';
-            modal.innerHTML = `<div class="modal-content"><div class="modal-header"><h3>Todo</h3><button class="close">x</button></div><div class="modal-body"><ul>${data.todos?.map(t => `<li class="oc-todo-item">${t}</li>`).join('') || 'No todos'}</ul></div></div>`;
-            document.body.appendChild(modal);
-            modal.querySelector('.close').onclick = () => modal.remove();
-            modal.style.display = 'block';
-        } catch(e) { console.error('Todo error', e); }
+            const data = await client.getTodo(activeSession.id);
+            // Todo entries are objects: { content, status, priority }.
+            const todos = Array.isArray(data) ? data : (data?.todos || []);
+            openPanel('Todo', (body) => {
+                if (!todos.length) {
+                    const p = document.createElement('p');
+                    p.className = 'oc-panel-empty';
+                    p.textContent = 'No todos yet.';
+                    body.appendChild(p);
+                    return;
+                }
+                const ul = document.createElement('ul');
+                ul.className = 'oc-todo-list';
+                for (const t of todos) {
+                    const li = document.createElement('li');
+                    li.className = `oc-todo-item ${t.status || ''}`;
+                    li.textContent = typeof t === 'string' ? t : (t.content || '');
+                    ul.appendChild(li);
+                }
+                body.appendChild(ul);
+            });
+        } catch(e) {
+            console.error('Todo error', e);
+            showError(`Could not load todos: ${e.message}`);
+        }
     });
 
     revertBtn.addEventListener('click', async () => {
         if (!activeSession) return;
-        if (confirm('Are you sure you want to revert uncommitted changes in this session?')) {
-            try {
-                await fetch(`/api/opencode/session/${activeSession.id}/revert`, { method: 'POST' });
-                alert('Reverted successfully');
-            } catch(e) { console.error('Revert error', e); }
+        // opencode reverts *to a message*: the messageID is required, so we
+        // undo everything from the last user turn onwards.
+        if (!lastUserMessageID) {
+            showError('Nothing to revert yet.');
+            return;
+        }
+        if (!confirm('Revert the changes made since your last message?')) return;
+        try {
+            await client.revert(activeSession.id, lastUserMessageID);
+        } catch(e) {
+            console.error('Revert error', e);
+            showError(`Revert failed: ${e.message}`);
         }
     });
 
@@ -521,13 +631,16 @@ export function createChatView(container, { client }) {
             if (p.type === 'compaction') return false;
             if (p.type === 'text' && p.synthetic === true) return false;
             if (p.type === 'text' && !p.text) return false;
-            if (p.type === 'tool' && (p.state?.status === 'pending' || p.state?.status === 'running')) return false;
+            if (p.type === 'tool' && p.state?.status === 'pending') return false;
             return true;
         });
 
         visibleParts.forEach(part => {
             const pEl = createPartElement(part);
-            if (part.id) partElements.set(part.id, pEl);
+            if (part.id) {
+                partElements.set(part.id, pEl);
+                partData.set(part.id, part);
+            }
             contentWrap.appendChild(pEl);
         });
 
@@ -551,25 +664,23 @@ export function createChatView(container, { client }) {
         messagesArea.innerHTML = '';
         messageElements.clear();
         partElements.clear();
-        setSessionState(session.status || 'idle');
+        partData.clear();
+        lastUserMessageID = null;
+        setSessionState('idle');
         isUserScrolledUp = false;
 
         try {
-            const res = await fetch(`/api/opencode/session/${session.id}/message`);
-            const data = await res.json();
-            // OpenCode v2 returns { items: [{info, parts}], more, cursor }
-            // But might also return a flat array or { messages: [...] }
-            let messages = [];
-            if (data.items && Array.isArray(data.items)) {
-                messages = data.items;
-            } else if (Array.isArray(data)) {
-                messages = data;
-            } else if (data.messages) {
-                messages = data.messages;
-            }
+            // GET /session/:id/message answers with [{ info, parts }].
+            const data = await client.getMessages(session.id);
+            const messages = Array.isArray(data) ? data : (data?.items || data?.messages || []);
             messages.forEach(renderMessage);
+            for (let i = messages.length - 1; i >= 0; i--) {
+                const info = messages[i]?.info || messages[i];
+                if (info?.role === 'user') { lastUserMessageID = info.id; break; }
+            }
         } catch (err) {
             console.error('Failed to load messages:', err);
+            showError(`Could not load messages: ${err.message}`);
         }
     };
 
@@ -577,59 +688,167 @@ export function createChatView(container, { client }) {
     return {
         loadSession,
         getActiveSession: () => activeSession,
+        /**
+         * Apply one opencode event.
+         *
+         * Contract (packages/schema/src/v1/session.ts + openapi.json):
+         *   session.updated       { sessionID, info }
+         *   session.status        { sessionID, status: {type} }
+         *   session.idle          { sessionID }
+         *   session.error         { sessionID, error }
+         *   message.updated       { sessionID, info }
+         *   message.removed       { sessionID, messageID }
+         *   message.part.updated  { sessionID, part, time }
+         *   message.part.delta    { sessionID, messageID, partID, field, delta }
+         *   message.part.removed  { sessionID, messageID, partID }
+         *   permission.asked      { id, sessionID, permission, patterns, metadata, always }
+         *   question.asked        { id, sessionID, questions }
+         *
+         * Note the capital-ID spelling throughout, and that entities live under
+         * `info`/`part` rather than at the top level.
+         *
+         * @param {{type: string, properties: Object}} event
+         */
         handleEvent(event) {
-            if (!event || !event.type || !event.data) return;
-            const data = event.data;
-            
-            // Only handle events for the active session
-            if (data.sessionId && activeSession && data.sessionId !== activeSession.id) return;
-            // Or if data is the session itself
-            if (event.type.startsWith('session.') && data.id !== activeSession?.id) return;
+            if (!event || !event.type) return;
+            const p = event.properties || {};
 
-            if (event.type === 'session.updated' || event.type === 'session.status') {
-                setSessionState(data.status);
-                activeSession = { ...activeSession, ...data };
-            } else if (event.type === 'message.created') {
-                renderMessage(data);
-            } else if (event.type === 'message.part.created') {
-                const msgEl = messageElements.get(data.messageId);
-                if (msgEl) {
-                    const contentWrap = msgEl.querySelector('.oc-message-content');
-                    if (contentWrap) {
-                        const pEl = createPartElement(data.part);
-                        partElements.set(data.part.id, pEl);
-                        contentWrap.appendChild(pEl);
-                        scrollToBottom();
+            // Everything below is session-scoped; ignore other sessions.
+            if (p.sessionID && p.sessionID !== activeSession?.id) return;
+            if (!activeSession) return;
+
+            switch (event.type) {
+                case 'session.updated': {
+                    if (p.info) {
+                        activeSession = { ...activeSession, ...p.info };
+                        if (headerTitle) headerTitle.textContent = activeSession.title || 'Untitled';
                     }
+                    break;
                 }
-            } else if (event.type === 'message.part.delta') {
-                const pEl = partElements.get(data.partId);
-                if (pEl) {
-                    // Primitive delta update (re-parse full text for markdown - in real app would use delta stream logic)
-                    // For reasoning:
-                    if (pEl.querySelector('.oc-thinking-block .content')) {
-                        const content = pEl.querySelector('.oc-thinking-block .content');
-                        content.textContent += data.delta;
+                case 'session.status': {
+                    setSessionState(p.status?.type || 'idle');
+                    break;
+                }
+                case 'session.idle': {
+                    setSessionState('idle');
+                    break;
+                }
+                case 'session.error': {
+                    setSessionState('idle');
+                    const err = p.error;
+                    showError(err?.data?.message || err?.name || 'The session reported an error.');
+                    break;
+                }
+                case 'message.updated': {
+                    const info = p.info;
+                    if (!info?.id) break;
+                    if (info.role === 'user') lastUserMessageID = info.id;
+                    const existing = messageElements.get(info.id);
+                    if (existing) {
+                        // Only the envelope changed; parts arrive separately.
+                        existing.className = `oc-message ${info.role || 'assistant'}`;
+                    } else {
+                        renderMessage({ info, parts: [] });
+                    }
+                    break;
+                }
+                case 'message.removed': {
+                    messageElements.get(p.messageID)?.remove();
+                    messageElements.delete(p.messageID);
+                    break;
+                }
+                case 'message.part.updated': {
+                    const part = p.part;
+                    if (!part?.id) break;
+                    partData.set(part.id, part);
+                    const existing = partElements.get(part.id);
+                    const el = createPartElement(part);
+                    partElements.set(part.id, el);
+                    if (existing) {
+                        existing.replaceWith(el);
+                    } else {
+                        // First sighting: attach it to its message, creating a
+                        // placeholder if the part outran message.updated.
+                        let msgEl = messageElements.get(part.messageID);
+                        if (!msgEl) {
+                            renderMessage({ info: { id: part.messageID, role: 'assistant' }, parts: [] });
+                            msgEl = messageElements.get(part.messageID);
+                        }
+                        msgEl?.querySelector('.oc-message-content')?.appendChild(el);
                     }
                     scrollToBottom();
+                    break;
                 }
-            } else if (event.type === 'message.part.updated') {
-                const pEl = partElements.get(data.part.id);
-                if (pEl) {
-                    // Re-render the entire part (tool state may have changed from running -> completed)
-                    const newEl = createPartElement(data.part);
-                    if (data.part.id) partElements.set(data.part.id, newEl);
-                    pEl.replaceWith(newEl);
+                case 'message.part.delta': {
+                    // `field` names the property being appended to (text,
+                    // reasoning input, ...). Re-render from the accumulated
+                    // value so markdown stays parsed mid-stream.
+                    if (typeof p.delta !== 'string') break;
+                    const cached = partData.get(p.partID);
+                    const el = partElements.get(p.partID);
+                    if (!cached || !el) break;
+                    const field = p.field || 'text';
+                    cached[field] = (cached[field] || '') + p.delta;
+                    const fresh = createPartElement(cached);
+                    partElements.set(p.partID, fresh);
+                    el.replaceWith(fresh);
                     scrollToBottom();
+                    break;
                 }
-            } else if (event.type === 'permission.created' && renderPermission) {
-                const pEl = renderPermission(data, client);
-                messagesArea.appendChild(pEl);
-                scrollToBottom();
-            } else if (event.type === 'question.created' && renderQuestion) {
-                const qEl = renderQuestion(data, client);
-                messagesArea.appendChild(qEl);
-                scrollToBottom();
+                case 'message.part.removed': {
+                    partElements.get(p.partID)?.remove();
+                    partElements.delete(p.partID);
+                    partData.delete(p.partID);
+                    break;
+                }
+                case 'permission.asked': {
+                    const card = renderPermission(p, async (requestID, reply) => {
+                        try {
+                            await client.replyPermission(requestID, reply);
+                        } catch (err) {
+                            showError(`Permission reply failed: ${err.message}`);
+                        }
+                        removePermission(requestID);
+                    });
+                    messagesArea.appendChild(card);
+                    scrollToBottom();
+                    break;
+                }
+                case 'permission.replied': {
+                    removePermission(p.requestID);
+                    break;
+                }
+                case 'question.asked': {
+                    const card = renderQuestion(
+                        p,
+                        async (requestID, answers) => {
+                            try {
+                                await client.replyQuestion(requestID, answers);
+                            } catch (err) {
+                                showError(`Answer failed: ${err.message}`);
+                            }
+                            removeQuestion(requestID);
+                        },
+                        async (requestID) => {
+                            try {
+                                await client.rejectQuestion(requestID);
+                            } catch (err) {
+                                showError(`Skip failed: ${err.message}`);
+                            }
+                            removeQuestion(requestID);
+                        },
+                    );
+                    messagesArea.appendChild(card);
+                    scrollToBottom();
+                    break;
+                }
+                case 'question.replied':
+                case 'question.rejected': {
+                    removeQuestion(p.requestID);
+                    break;
+                }
+                default:
+                    break;
             }
         },
         destroy() {

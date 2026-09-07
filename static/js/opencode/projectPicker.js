@@ -2,6 +2,8 @@
  * @fileoverview Dropdown component for selecting the active OpenCode project/workspace.
  */
 
+import { getDirectory } from './opencode.js';
+
 /**
  * Creates a project picker component.
  * @param {HTMLElement} container - The DOM element to render the picker into.
@@ -29,15 +31,18 @@ export function createProjectPicker(container, { onProjectChange }) {
     wrapper.appendChild(message);
     container.appendChild(wrapper);
 
-    // Load from local storage
-    const storedProject = localStorage.getItem('oc-active-project');
+    // The client module owns the persisted project ('oc_active_project'); this
+    // used to read a differently-spelled key, so the restored selection never
+    // matched and no directory was ever sent with a request.
+    const storedProject = getDirectory();
 
     // Handle selection changes
     const handleChange = () => {
         const selectedValue = select.value;
         if (selectedValue !== activeProject) {
             activeProject = selectedValue;
-            localStorage.setItem('oc-active-project', activeProject);
+            // Persistence lives in the client module (setDirectory), which also
+            // rebinds the event stream to the new directory.
             if (onProjectChange) {
                 onProjectChange(activeProject);
             }
