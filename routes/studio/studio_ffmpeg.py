@@ -51,6 +51,8 @@ async def get_video_info(video_path: str) -> dict:
         streams = data.get("streams", [])
         video_stream = next((s for s in streams if s.get("codec_type") == "video"), None)
         
+        info["has_audio"] = any(st.get("codec_type") == "audio" for st in streams)
+
         if video_stream:
             if "width" in video_stream:
                 info["width"] = int(video_stream["width"])
@@ -105,36 +107,111 @@ async def extract_last_frame(video_path: str) -> bytes:
     
     return await extract_frame_at(video_path, target_time)
 
+async def _streams_are_concat_compatible(path_1: str, path_2: str) -> bool:
+    """Whether the two files can be joined with stream copy.
+
+    The concat demuxer with ``-c copy`` requires matching codec, resolution and
+    frame rate. When they differ it does not reliably fail — it often exits 0
+    and writes a file that stalls or truncates at the join. So compare first
+    and only take the copy path when the parameters actually line up.
+    """
+    a, b = await asyncio.gather(get_video_info(path_1), get_video_info(path_2))
+    if not a or not b:
+        return False
+    if a.get("codec") != b.get("codec"):
+        return False
+    if bool(a.get("has_audio")) != bool(b.get("has_audio")):
+        return False
+    if (a.get("width"), a.get("height")) != (b.get("width"), b.get("height")):
+        return False
+    fps_a, fps_b = a.get("fps"), b.get("fps")
+    if fps_a and fps_b and abs(fps_a - fps_b) > 0.05:
+        return False
+    return True
+
+
+async def _run_ffmpeg(cmd: list) -> tuple:
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    _, stderr = await process.communicate()
+    return process.returncode, stderr.decode("utf-8", "replace")
+
+
 async def concatenate_videos(path_1: str, path_2: str, output_path: str) -> str:
-    """Concatenate two videos using FFmpeg's concat demuxer."""
+    """Concatenate two videos, re-encoding when stream copy would not be safe.
+
+    Extension segments regularly come back from the model with a different
+    resolution or frame rate than the source, which is exactly the case
+    ``-c copy`` mishandles silently. The concat *filter* re-encodes and
+    normalises instead, so it is the fallback whenever the streams differ (and
+    the retry path when a copy attempt fails outright).
+    """
     if not is_ffmpeg_available():
         raise RuntimeError("ffmpeg is not available")
-        
-    # Create temp list file
-    fd, list_file_path = tempfile.mkstemp(suffix=".txt", text=True)
-    try:
-        with os.fdopen(fd, 'w') as f:
-            f.write(f"file '{os.path.abspath(path_1)}'\n")
-            f.write(f"file '{os.path.abspath(path_2)}'\n")
-            
-        cmd = [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0", 
-            "-i", list_file_path, "-c", "copy", output_path
-        ]
-        
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+
+    if await _streams_are_concat_compatible(path_1, path_2):
+        fd, list_file_path = tempfile.mkstemp(suffix=".txt", text=True)
+        try:
+            with os.fdopen(fd, 'w') as f:
+                f.write(f"file '{os.path.abspath(path_1)}'\n")
+                f.write(f"file '{os.path.abspath(path_2)}'\n")
+
+            rc, err = await _run_ffmpeg([
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "-i", list_file_path, "-c", "copy", output_path
+            ])
+            if rc == 0:
+                return output_path
+            logger.warning("Stream-copy concat failed, re-encoding instead: %s", err[-500:])
+        finally:
+            if os.path.exists(list_file_path):
+                os.remove(list_file_path)
+    else:
+        logger.info("Concat inputs differ in codec/size/fps — re-encoding")
+
+    # Re-encode path: the concat filter scales the second input to the first
+    # one's frame size and produces a single consistent stream.
+    info_a, info_b = await asyncio.gather(get_video_info(path_1), get_video_info(path_2))
+    width, height = info_a.get("width"), info_a.get("height")
+    fps = info_a.get("fps") or 30
+    scale = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+        if width and height else "null"
+    )
+
+    # Keep audio when both inputs have it. Dropping it would silently strip the
+    # soundtrack from models generating with generate_audio=true.
+    keep_audio = bool(info_a.get("has_audio")) and bool(info_b.get("has_audio"))
+
+    if keep_audio:
+        filter_complex = (
+            f"[0:v]{scale},fps={fps}[v0];"
+            f"[1:v]{scale},fps={fps}[v1];"
+            f"[0:a]aresample=48000,asetpts=N/SR/TB[a0];"
+            f"[1:a]aresample=48000,asetpts=N/SR/TB[a1];"
+            f"[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"
         )
-        _, stderr = await process.communicate()
-        
-        if process.returncode != 0:
-            error_msg = stderr.decode('utf-8')
-            raise RuntimeError(f"FFmpeg concatenation failed: {error_msg}")
-            
-        return output_path
-    finally:
-        # Cleanup
-        if os.path.exists(list_file_path):
-            os.remove(list_file_path)
+        maps = ["-map", "[outv]", "-map", "[outa]", "-c:a", "aac", "-b:a", "192k"]
+    else:
+        filter_complex = (
+            f"[0:v]{scale},fps={fps}[v0];"
+            f"[1:v]{scale},fps={fps}[v1];"
+            f"[v0][v1]concat=n=2:v=1:a=0[outv]"
+        )
+        maps = ["-map", "[outv]"]
+
+    rc, err = await _run_ffmpeg([
+        "ffmpeg", "-y", "-i", path_1, "-i", path_2,
+        "-filter_complex", filter_complex, *maps,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+        output_path
+    ])
+    if rc != 0:
+        raise RuntimeError(f"FFmpeg concatenation failed: {err}")
+
+    return output_path
