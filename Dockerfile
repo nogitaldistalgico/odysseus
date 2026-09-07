@@ -11,11 +11,6 @@ RUN bash /usr/local/bin/build-realesrgan-wheels.sh /wheels
 
 FROM python:3.14-slim
 
-# uv / uvx – copied from the official Astral multi-stage image so we can
-# launch Python-based MCP servers (e.g. zotero-mcp-server) at runtime via
-# `uvx` without pip dependency conflicts.
-COPY --from=ghcr.io/astral-sh/uv:0.12.6 /uv /uvx /bin/
-
 # System deps. tmux is required by Cookbook for background downloads/serves.
 # openssh-client is required for Cookbook remote server tests, setup, probes,
 # downloads, and serves from Docker installs.
