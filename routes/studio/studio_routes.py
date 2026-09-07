@@ -107,32 +107,77 @@ class MagicPromptRequest(BaseModel):
     model: Optional[str] = "anthropic/claude-3.5-sonnet"
     system_prompt: Optional[str] = None
 
-def _resolve_media_path(file_id: str) -> str:
-    """Resolve a media file ID to its absolute path on disk."""
-    path = os.path.join(UPLOAD_DIR, file_id)
-    if not os.path.isfile(path):
-        for root, dirs, files in os.walk(UPLOAD_DIR):
-            if file_id in files:
-                path = os.path.join(root, file_id)
-                break
-    if not os.path.isfile(path):
-        raise HTTPException(404, "Base media file not found")
-    return path
+def _path_inside(root: str, path: str) -> bool:
+    """True when *path* really resolves inside *root* (symlinks included)."""
+    try:
+        root_real = os.path.realpath(root)
+        return os.path.commonpath([root_real, os.path.realpath(path)]) == root_real
+    except Exception:
+        return False
 
 
-def _get_base64_data_url(file_id: str) -> str:
+def _resolve_media_path(file_id: str, owner: Optional[str] = None) -> str:
+    """Resolve a media reference to an absolute path on disk.
+
+    ``file_id`` is attacker-controlled: it arrives straight from
+    ``media_references[].id`` / ``base_media_id`` in the request body. Joining
+    it onto UPLOAD_DIR unchecked let "../../../etc/passwd" resolve outside the
+    data directory, and the caller then base64-encodes that file into an
+    OpenRouter payload (or uploads it to S3 and hands back a presigned URL).
+    So: the id must be a bare filename, and every candidate path is verified to
+    resolve inside a permitted root.
+
+    Studio-generated media is resolvable too (by media id or filename), which
+    is what lets a library item be used as a reference for the next
+    generation. That lookup is owner-scoped when *owner* is given.
+    """
+    # A reference is a single filesystem name — never a path.
+    if not file_id or file_id in (".", "..") or os.path.basename(file_id) != file_id:
+        raise HTTPException(400, "Invalid media reference")
+
+    # 1) Studio media, resolved through the DB so ownership is enforced.
+    db = SessionLocal()
+    try:
+        q = db.query(StudioMedia).filter(
+            (StudioMedia.id == file_id) | (StudioMedia.filename == file_id)
+        )
+        m = q.first()
+        if m is not None:
+            if owner is not None and m.owner and m.owner != owner:
+                raise HTTPException(404, "Base media file not found")
+            candidate = os.path.join(STUDIO_MEDIA_DIR, m.filename)
+            if os.path.isfile(candidate) and _path_inside(STUDIO_MEDIA_DIR, candidate):
+                return candidate
+    finally:
+        db.close()
+
+    # 2) Uploads. Mirrors _resolve_upload_path in routes/upload_routes.py.
+    direct = os.path.join(UPLOAD_DIR, file_id)
+    if os.path.isfile(direct) and _path_inside(UPLOAD_DIR, direct):
+        return direct
+
+    for root, _dirs, files in os.walk(UPLOAD_DIR, followlinks=False):
+        if file_id in files:
+            path = os.path.join(root, file_id)
+            if os.path.isfile(path) and _path_inside(UPLOAD_DIR, path):
+                return path
+
+    raise HTTPException(404, "Base media file not found")
+
+
+def _get_base64_data_url(file_id: str, owner: Optional[str] = None) -> str:
     """Read a media file and return it as a base64 data-URL (unchanged)."""
-    path = _resolve_media_path(file_id)
+    path = _resolve_media_path(file_id, owner)
     mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
     with open(path, "rb") as f:
         b64_str = base64.b64encode(f.read()).decode("utf-8")
     return f"data:{mime};base64,{b64_str}"
 
 
-def _get_preprocessed_base64_data_url(file_id: str, model_constraints: dict) -> str:
+def _get_preprocessed_base64_data_url(file_id: str, model_constraints: dict, owner: Optional[str] = None) -> str:
     """Read a media file, preprocess it (resize/crop) for the target video
     model, and return the result as a base64 data-URL."""
-    path = _resolve_media_path(file_id)
+    path = _resolve_media_path(file_id, owner)
     with open(path, "rb") as f:
         raw_bytes = f.read()
 
@@ -147,16 +192,16 @@ def _get_preprocessed_base64_data_url(file_id: str, model_constraints: dict) -> 
     b64_str = base64.b64encode(processed).decode("utf-8")
     return f"data:{mime};base64,{b64_str}"
 
-async def _get_s3_url(file_id: str, expiration: int = 300) -> str:
+async def _get_s3_url(file_id: str, expiration: int = 300, owner: Optional[str] = None) -> str:
     from src.s3_utils import upload_video_and_get_presigned_url
-    path = _resolve_media_path(file_id)
+    path = _resolve_media_path(file_id, owner)
     object_name = f"studio_refs/{file_id}"
     return await upload_video_and_get_presigned_url(path, object_name, expiration)
 
-async def _get_preprocessed_s3_url(file_id: str, model_constraints: dict, expiration: int = 300) -> str:
+async def _get_preprocessed_s3_url(file_id: str, model_constraints: dict, expiration: int = 300, owner: Optional[str] = None) -> str:
     import tempfile
     from src.s3_utils import upload_video_and_get_presigned_url
-    path = _resolve_media_path(file_id)
+    path = _resolve_media_path(file_id, owner)
     with open(path, "rb") as f:
         raw_bytes = f.read()
 
@@ -173,6 +218,7 @@ async def _get_preprocessed_s3_url(file_id: str, model_constraints: dict, expira
     finally:
         os.remove(tmp_path)
     return url
+
 
 import time
 
@@ -408,16 +454,30 @@ def get_studio_media(request: Request, filename: str):
     finally:
         db.close()
 
-async def _apply_character_references(prompt: str, character_ids: List[str], db, refs: List[Dict], suffix: Optional[str] = None, mapping_template: Optional[str] = None, use_s3: bool = False) -> str:
-    """Replaces character names in the prompt with pseudonyms and appends their images to refs."""
+async def _apply_character_references(prompt: str, character_ids: List[str], db, refs: List[Dict], suffix: Optional[str] = None, mapping_template: Optional[str] = None, use_s3: bool = False, owner: Optional[str] = None) -> str:
+    """Replaces character names in the prompt with pseudonyms and appends their images to refs.
+
+    The character lookup is owner-scoped: without it any studio user could pull
+    another user's characters — and therefore their reference face images —
+    into their own generation payload just by passing the id.
+    """
     import re
     import string
     
     if not character_ids:
         return prompt
         
-    chars = db.query(StudioCharacter).filter(StudioCharacter.id.in_(character_ids)).all()
-    
+    q = db.query(StudioCharacter).filter(StudioCharacter.id.in_(character_ids))
+    if owner is not None:
+        q = q.filter(StudioCharacter.owner_id == owner)
+    chars = q.all()
+
+    # Whether the caller had already staged a scene reference before we append
+    # character images. This used to be read off the *last* character's
+    # start_idx after the loop, so with two or more characters the scene suffix
+    # was appended even when no scene image existed.
+    had_scene_reference = len(refs) > 0
+
     meta_instructions = []
     
     for i, char in enumerate(chars):
@@ -482,7 +542,7 @@ async def _apply_character_references(prompt: str, character_ids: List[str], db,
     if meta_instructions:
         prompt += "\n\n" + " ".join(meta_instructions)
         # If there's an initial reference image (idx 1), it's the scene.
-        if start_idx > 1:
+        if had_scene_reference:
             if suffix:
                 prompt += " " + suffix
             else:
@@ -537,7 +597,7 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
                     refs.append({
                         "type": "image_url",
                         "image_url": {
-                            "url": _get_base64_data_url(m_id)
+                            "url": _get_base64_data_url(m_id, user)
                         }
                     })
                     
@@ -549,7 +609,7 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
                     refs.append({
                         "type": "image_url",
                         "image_url": {
-                            "url": _get_base64_data_url(m_ref.id)
+                            "url": _get_base64_data_url(m_ref.id, user)
                         }
                     })
 
@@ -557,7 +617,8 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
         if req.character_ids:
             prompt = await _apply_character_references(
                 prompt, req.character_ids, db, refs, 
-                req.character_prompt_suffix, req.character_mapping_template
+                req.character_prompt_suffix, req.character_mapping_template,
+                owner=user,
             )
             
         payload["prompt"] = prompt
@@ -653,7 +714,7 @@ async def generate_video(request: Request, req: VideoGenRequest):
             for idx, m_id in enumerate(req.base_media_id.split(",")):
                 m_id = m_id.strip()
                 if m_id:
-                    url = _get_preprocessed_base64_data_url(m_id, constraints)
+                    url = _get_preprocessed_base64_data_url(m_id, constraints, user)
                     # For legacy base_media_id, we always put it in refs as well
                     refs.append({
                         "type": "image_url",
@@ -683,7 +744,7 @@ async def generate_video(request: Request, req: VideoGenRequest):
             for m_ref in req.media_references:
                 if m_ref.id:
                     if m_ref.role == MediaReferenceRole.FIRST_FRAME:
-                        url = _get_preprocessed_base64_data_url(m_ref.id, constraints)
+                        url = _get_preprocessed_base64_data_url(m_ref.id, constraints, user)
                         frame_imgs.append({
                             "type": "image_url",
                             "image_url": {
@@ -692,7 +753,7 @@ async def generate_video(request: Request, req: VideoGenRequest):
                             "frame_type": "first_frame"
                         })
                     elif m_ref.role == MediaReferenceRole.LAST_FRAME:
-                        url = _get_preprocessed_base64_data_url(m_ref.id, constraints)
+                        url = _get_preprocessed_base64_data_url(m_ref.id, constraints, user)
                         frame_imgs.append({
                             "type": "image_url",
                             "image_url": {
@@ -703,9 +764,9 @@ async def generate_video(request: Request, req: VideoGenRequest):
                     else:
                         # Default is REFERENCE, which goes into input_references via S3
                         if req.upload_method == "s3":
-                            url = await _get_preprocessed_s3_url(m_ref.id, constraints, expiration=300)
+                            url = await _get_preprocessed_s3_url(m_ref.id, constraints, expiration=300, owner=user)
                         else:
-                            url = _get_preprocessed_base64_data_url(m_ref.id, constraints)
+                            url = _get_preprocessed_base64_data_url(m_ref.id, constraints, user)
                         refs.append({
                             "type": "image_url",
                             "image_url": {
@@ -719,7 +780,8 @@ async def generate_video(request: Request, req: VideoGenRequest):
             # We pass refs by reference, so characters are appended to refs, but NOT to frame_imgs
             prompt = await _apply_character_references(
                 prompt, req.character_ids, db, refs, 
-                req.character_prompt_suffix, req.character_mapping_template, use_s3=(req.upload_method == "s3")
+                req.character_prompt_suffix, req.character_mapping_template,
+                use_s3=(req.upload_method == "s3"), owner=user,
             )
             
         payload["prompt"] = prompt
@@ -991,7 +1053,7 @@ async def extend_video(request: Request, req: VideoExtendRequest):
             for m_ref in req.media_references:
                 # In extend mode, we only respect "reference" role since the video drives the timeline
                 if m_ref.id and m_ref.role == MediaReferenceRole.REFERENCE:
-                    url = await _get_preprocessed_s3_url(m_ref.id, constraints, expiration=300)
+                    url = await _get_preprocessed_s3_url(m_ref.id, constraints, expiration=300, owner=user)
                     refs.append({
                         "type": "image_url",
                         "image_url": {"url": url}
@@ -1001,7 +1063,8 @@ async def extend_video(request: Request, req: VideoExtendRequest):
         if req.character_ids:
             prompt = await _apply_character_references(
                 prompt, req.character_ids, db, refs,
-                req.character_prompt_suffix, req.character_mapping_template, use_s3=(req.upload_method == "s3")
+                req.character_prompt_suffix, req.character_mapping_template,
+                use_s3=(req.upload_method == "s3"), owner=user,
             )
 
         # 3. Build payload
@@ -1218,7 +1281,7 @@ async def edit_video(request: Request, req: VideoEditRequest):
         if req.media_references:
             for m_ref in req.media_references:
                 if m_ref.id and m_ref.role == MediaReferenceRole.REFERENCE:
-                    url = await _get_preprocessed_s3_url(m_ref.id, constraints, expiration=300)
+                    url = await _get_preprocessed_s3_url(m_ref.id, constraints, expiration=300, owner=user)
                     refs.append({
                         "type": "image_url",
                         "image_url": {"url": url}
@@ -1228,7 +1291,8 @@ async def edit_video(request: Request, req: VideoEditRequest):
         if req.character_ids:
             prompt = await _apply_character_references(
                 prompt, req.character_ids, db, refs,
-                req.character_prompt_suffix, req.character_mapping_template, use_s3=(req.upload_method == "s3")
+                req.character_prompt_suffix, req.character_mapping_template,
+                use_s3=(req.upload_method == "s3"), owner=user,
             )
 
         # 3. Build payload — upload source video to S3 and generate Presigned URL
@@ -1456,57 +1520,41 @@ async def delete_character(char_id: str, request: Request):
 
 @router.get("/api/studio/characters/{char_id}/images/{filename}")
 def get_character_image(char_id: str, filename: str, request: Request):
-    """Serve a character image directly."""
+    """Serve a character image directly.
+
+    This route only checked the *privilege*, not ownership — every other
+    character route filters on owner_id, so anyone who knew a char_id could
+    read another user's reference faces. Both path segments are also joined
+    onto a directory, so they are constrained to bare names and the result is
+    verified to stay inside STUDIO_CHARACTERS_DIR.
+    """
     user_id = require_studio_privilege(request)
+
+    if os.path.basename(char_id) != char_id or os.path.basename(filename) != filename \
+            or char_id in (".", "..") or filename in (".", ".."):
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    db = SessionLocal()
+    try:
+        char = db.query(StudioCharacter).filter(
+            StudioCharacter.id == char_id,
+            StudioCharacter.owner_id == user_id,
+        ).first()
+        if not char:
+            raise HTTPException(status_code=404, detail="Image not found")
+
+        import json
+        images = json.loads(char.images_json) if char.images_json else []
+        if filename not in images:
+            raise HTTPException(status_code=404, detail="Image not found")
+    finally:
+        db.close()
+
     filepath = os.path.join(STUDIO_CHARACTERS_DIR, char_id, filename)
-    if not os.path.exists(filepath):
+    if not os.path.isfile(filepath) or not _path_inside(STUDIO_CHARACTERS_DIR, filepath):
         raise HTTPException(status_code=404, detail="Image not found")
     return FileResponse(filepath)
 
-
-@router.get("/api/studio/debug_video")
-async def debug_video(request: Request):
-    user = effective_user(request)
-    db = SessionLocal()
-    try:
-        m = db.query(StudioMedia).filter(StudioMedia.media_type == "video").order_by(StudioMedia.created_at.desc()).first()
-        if not m:
-            return {"error": "No video found in database"}
-            
-        api_key = get_openrouter_api_key(db)
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        
-        poll_url = m.job_id or ""
-        if poll_url and not poll_url.startswith("http"):
-            if not poll_url.startswith("/"):
-                poll_url = f"/api/v1/generation?id={poll_url}"
-            poll_url = f"https://openrouter.ai{poll_url}"
-            
-        result = {
-            "database_id": m.id,
-            "filename": m.filename,
-            "raw_job_id_in_db": m.job_id,
-            "db_job_status": m.job_status,
-            "computed_poll_url": poll_url
-        }
-        
-        if not poll_url:
-            return result
-            
-        try:
-            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-                resp = await client.get(poll_url, headers=headers)
-                result["openrouter_status_code"] = resp.status_code
-                try:
-                    result["openrouter_response"] = resp.json()
-                except:
-                    result["openrouter_response"] = resp.text
-        except Exception as e:
-            result["httpx_error"] = str(e)
-            
-        return result
-    finally:
-        db.close()
 
 @router.post("/api/studio/magic-prompt")
 async def generate_magic_prompt(request: Request, req: MagicPromptRequest):
@@ -1526,7 +1574,7 @@ async def generate_magic_prompt(request: Request, req: MagicPromptRequest):
         user_content = [{"type": "text", "text": req.prompt}]
         
         if req.media_id:
-            path = _resolve_media_path(req.media_id)
+            path = _resolve_media_path(req.media_id, user)
             mime_type, _ = mimetypes.guess_type(path)
             if mime_type and mime_type.startswith("video"):
                 if is_ffmpeg_available():
@@ -1542,7 +1590,7 @@ async def generate_magic_prompt(request: Request, req: MagicPromptRequest):
             else:
                 user_content.append({
                     "type": "image_url",
-                    "image_url": {"url": _get_base64_data_url(req.media_id)}
+                    "image_url": {"url": _get_base64_data_url(req.media_id, user)}
                 })
                 
         messages.append({"role": "user", "content": user_content})
