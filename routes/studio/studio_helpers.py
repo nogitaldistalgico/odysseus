@@ -69,6 +69,12 @@ def _media_to_dict(media: StudioMedia) -> Dict[str, Any]:
         "fps": media.fps,
         "source_media_id": media.source_media_id,
         "generation_mode": media.generation_mode,
+        # Why a job failed — the client could previously only show "failed".
+        "error": media.error,
+        "seed": media.seed,
+        "thumbnail_url": (
+            f"/api/studio/thumbnail/{media.thumbnail}" if media.thumbnail else None
+        ),
         "created_at": media.created_at.isoformat() if media.created_at else None,
         "updated_at": media.updated_at.isoformat() if media.updated_at else None,
     }

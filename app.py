@@ -1255,6 +1255,29 @@ async def _startup_event():
 
     _startup_tasks.append(asyncio.create_task(_null_owner_sweep_loop()))
 
+    # Studio video jobs are generated asynchronously by OpenRouter and only
+    # become a file on disk once somebody polls and downloads the result. That
+    # used to happen exclusively in the client's poll request, so a job whose
+    # client went away — app backgrounded, killed, network lost — stayed
+    # "pending" forever and the paid generation was lost. This finishes them
+    # regardless of whether anyone is listening.
+    async def _studio_job_finaliser_loop():
+        interval = float(os.getenv("ODYSSEUS_STUDIO_POLL_SECONDS", "20") or "20")
+        await asyncio.sleep(15)  # let startup settle before the first sweep
+        while True:
+            try:
+                from routes.studio.studio_routes import finalize_pending_video_jobs
+                await finalize_pending_video_jobs()
+            except Exception as e:
+                logger.debug(f"Studio job finaliser skipped: {e}")
+            await asyncio.sleep(interval)
+
+    _studio_inprocess = os.environ.get("ODYSSEUS_INPROCESS_STUDIO_JOBS", "1").strip().lower()
+    if _studio_inprocess not in ("0", "false", "no", "off", ""):
+        _startup_tasks.append(asyncio.create_task(_studio_job_finaliser_loop()))
+    else:
+        logger.info("In-process Studio job finaliser disabled (ODYSSEUS_INPROCESS_STUDIO_JOBS=0).")
+
     # Nightly skill audit — at ~02:00 local, test + judge a batch of the
     # least-recently-checked skills, auto-fixing/escalating weak ones (never
     # deletes). Rotates through the library so each night covers different

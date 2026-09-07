@@ -2,6 +2,7 @@ import os
 import asyncio
 import uuid
 import time
+from datetime import datetime, timedelta
 import httpx
 import logging
 import base64
@@ -13,7 +14,7 @@ from pydantic import BaseModel
 
 from core.database import SessionLocal, StudioMedia, StudioCharacter
 from src.auth_helpers import get_current_user, effective_user
-from src.constants import STUDIO_MEDIA_DIR, STUDIO_CHARACTERS_DIR, UPLOAD_DIR
+from src.constants import STUDIO_MEDIA_DIR, STUDIO_CHARACTERS_DIR, STUDIO_THUMBNAIL_DIR, UPLOAD_DIR
 from src.settings import load_settings, get_user_setting
 from src.upload_limits import STUDIO_UPLOAD_MAX_BYTES, read_upload_limited
 from routes.studio.studio_helpers import _owner_filter, _media_to_dict, get_openrouter_api_key, require_studio_privilege
@@ -28,10 +29,21 @@ from src.s3_utils import upload_video_and_get_presigned_url
 import mimetypes
 
 os.makedirs(STUDIO_MEDIA_DIR, exist_ok=True)
+os.makedirs(STUDIO_THUMBNAIL_DIR, exist_ok=True)
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 STUDIO_VIDEO_EXTS = {"mp4", "mov", "webm", "mkv", "m4v"}
+
+# Sent to OpenRouter for attribution. Was hardcoded to the upstream project;
+# override with ODYSSEUS_STUDIO_REFERER if you want your own.
+STUDIO_REFERER = os.getenv("ODYSSEUS_STUDIO_REFERER", "https://github.com/odysseus-dev/odysseus")
+
+# Model used to expand a short prompt into a detailed one. claude-3.5-sonnet was
+# hardcoded here; keep it configurable so it doesn't rot again.
+STUDIO_MAGIC_PROMPT_MODEL = os.getenv(
+    "ODYSSEUS_STUDIO_MAGIC_PROMPT_MODEL", "anthropic/claude-sonnet-4.5"
+)
 
 import enum
 
@@ -104,8 +116,38 @@ class VideoEditRequest(BaseModel):
 class MagicPromptRequest(BaseModel):
     prompt: str
     media_id: Optional[str] = None
-    model: Optional[str] = "anthropic/claude-3.5-sonnet"
+    model: Optional[str] = None  # falls back to STUDIO_MAGIC_PROMPT_MODEL
     system_prompt: Optional[str] = None
+
+_IMAGE_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+)
+
+
+def _image_extension(data: bytes, content_type: Optional[str], url: Optional[str]) -> str:
+    """Pick a file extension that matches the bytes we actually received.
+
+    Magic numbers first (authoritative), then the Content-Type header, then the
+    URL, then PNG as the historical default.
+    """
+    for magic, ext in _IMAGE_MAGIC:
+        if data.startswith(magic):
+            return ext
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    if content_type:
+        guessed = mimetypes.guess_extension(content_type.split(";")[0].strip())
+        if guessed:
+            return ".jpg" if guessed == ".jpe" else guessed
+    if url:
+        url_ext = os.path.splitext(url.split("?")[0])[1].lower()
+        if url_ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+            return url_ext
+    return ".png"
+
 
 def _path_inside(root: str, path: str) -> bool:
     """True when *path* really resolves inside *root* (symlinks included)."""
@@ -219,12 +261,15 @@ async def _get_preprocessed_s3_url(file_id: str, model_constraints: dict, expira
         os.remove(tmp_path)
     return url
 
-
-import time
-
 _studio_models_cache = None
 _studio_models_cache_time = 0
-CACHE_TTL = 3600 # 1 hour
+CACHE_TTL = 3600  # 1 hour
+# When OpenRouter is down, every request used to re-issue four upstream calls
+# with a 15s timeout before falling back. Remember the failure briefly and
+# serialise the refresh so one outage can't turn into a thundering herd.
+_studio_models_error_time = 0.0
+STUDIO_MODELS_ERROR_TTL = 60.0
+_studio_models_lock = asyncio.Lock()
 
 @router.get("/api/studio/models")
 async def get_studio_models():
@@ -237,11 +282,30 @@ async def get_studio_models():
     Both photo and video entries include ``supports_character_reference``
     derived from each model's ``architecture.input_modalities``.
     """
-    global _studio_models_cache, _studio_models_cache_time
-    
+    global _studio_models_cache, _studio_models_cache_time, _studio_models_error_time
+
     if _studio_models_cache and (time.time() - _studio_models_cache_time) < CACHE_TTL:
         return _studio_models_cache
 
+    async with _studio_models_lock:
+        # Another request may have refreshed while we waited for the lock.
+        if _studio_models_cache and (time.time() - _studio_models_cache_time) < CACHE_TTL:
+            return _studio_models_cache
+        if (time.time() - _studio_models_error_time) < STUDIO_MODELS_ERROR_TTL:
+            return _studio_models_cache or _STUDIO_MODELS_FALLBACK
+        return await _fetch_studio_models()
+
+
+_STUDIO_MODELS_FALLBACK = {
+    "photo": [{"id": "google/gemini-3-pro-image", "name": "Google Nano Banana Pro (Gemini 3)",
+               "supports_character_reference": True}],
+    "video": [{"id": "google/veo-3.1", "name": "Google Veo 3.1",
+               "supports_character_reference": True}],
+}
+
+
+async def _fetch_studio_models():
+    global _studio_models_cache, _studio_models_cache_time, _studio_models_error_time
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             img_resp, vid_resp, vid_constraints_resp, img_constraints_resp = await asyncio.gather(
@@ -346,18 +410,44 @@ async def get_studio_models():
                 entry["supports_video_editing"] = supports_video_editing(c)
                 entry["pricing"] = c.get("pricing_skus", {})
                 
-                # Character reference / Soft reference:
-                desc = str(c.get("description", "")).lower()
-                supports_soft = any(kw in desc for kw in [
-                    "reference-to-video", "reference-based", "reference images", 
-                    "reference-conditioned", "character consistency"
-                ])
-                # If OpenRouter gives us a specific flag in the future, we'd use it here.
-                # For now, we strictly look for reference capabilities in the description,
-                # to distinguish them from models that ONLY support first_frame.
-                entry["supports_character_reference"] = supports_soft
-                # Default to 10 if not provided but image input is supported
-                entry["max_image_references"] = 10 if entry["supports_character_reference"] else 0
+                # Character reference / soft reference.
+                #
+                # Structured signals first: OpenRouter reports an
+                # `input_references` entry in supported_parameters for models
+                # that take reference images, which is authoritative. Reading
+                # the prose description was the only check before, so the
+                # capability silently flipped whenever a description got
+                # reworded.
+                supported_params = c.get("supported_parameters") or []
+                if isinstance(supported_params, dict):
+                    supported_params = list(supported_params.keys())
+                param_names = {str(x).lower() for x in supported_params}
+                allowed_passthrough = {
+                    str(x).lower() for x in (c.get("allowed_passthrough_parameters") or [])
+                }
+
+                supports_refs = bool(
+                    {"input_references", "reference_images", "references"}
+                    & (param_names | allowed_passthrough)
+                )
+
+                max_refs = 0
+                raw_refs = c.get("input_references")
+                if isinstance(raw_refs, dict) and raw_refs.get("max") is not None:
+                    max_refs = int(raw_refs["max"])
+                    supports_refs = max_refs > 0
+
+                if not supports_refs:
+                    # Fallback: the old description sniffing, kept so models
+                    # OpenRouter has not annotated yet still work.
+                    desc = str(c.get("description", "")).lower()
+                    supports_refs = any(kw in desc for kw in [
+                        "reference-to-video", "reference-based", "reference images",
+                        "reference-conditioned", "character consistency",
+                    ])
+
+                entry["supports_character_reference"] = supports_refs
+                entry["max_image_references"] = max_refs or (10 if supports_refs else 0)
                 
                 videos.append(entry)
                 
@@ -369,11 +459,9 @@ async def get_studio_models():
             return _studio_models_cache
     except Exception as e:
         logger.error(f"Failed to fetch studio models from OpenRouter: {e}")
-        # Fallback to a minimal list if the API call fails
-        return _studio_models_cache or {
-            "photo": [{"id": "google/gemini-3-pro-image", "name": "Google Nano Banana Pro (Gemini 3)", "supports_character_reference": True}],
-            "video": [{"id": "google/veo-3.1", "name": "Google Veo 3.1", "supports_character_reference": True}]
-        }
+        _studio_models_error_time = time.time()
+        # Serve the last good list when we have one; otherwise a minimal stub.
+        return _studio_models_cache or _STUDIO_MODELS_FALLBACK
 
 
 @router.get("/api/studio/model-constraints/{model_id:path}")
@@ -407,6 +495,50 @@ async def get_model_constraints_endpoint(model_id: str):
         "supports_video_editing": supports_video_editing(constraints),
         "supports_character_reference": supports_character_reference(constraints),
     }
+
+class CostEstimateRequest(BaseModel):
+    model: str
+    duration: Optional[float] = None
+    resolution: Optional[str] = None
+    aspect_ratio: Optional[str] = None
+    generate_audio: Optional[bool] = None
+    reference_image_count: int = 0
+    is_continuation: bool = False
+
+
+@router.post("/api/studio/estimate-cost")
+async def estimate_cost(request: Request, req: CostEstimateRequest):
+    """What one generation with these parameters will cost, in USD.
+
+    The pricing data already travels with /api/studio/models but was only ever
+    passed through; this turns it into a number the client can show before the
+    user commits to a run. Token-priced models return usd=null with a reason
+    rather than a guessed figure.
+    """
+    require_studio_privilege(request)
+    from routes.studio.studio_pricing import estimate_video_cost
+
+    constraints = await get_model_constraints(req.model)
+    skus = constraints.get("pricing_skus") or {}
+
+    duration = req.duration
+    if duration is None:
+        supported = constraints.get("supported_durations") or []
+        duration = supported[0] if supported else None
+
+    result = estimate_video_cost(
+        skus,
+        duration=duration,
+        resolution=req.resolution,
+        generate_audio=req.generate_audio,
+        reference_image_count=req.reference_image_count,
+        is_continuation=req.is_continuation,
+    )
+    result["model"] = req.model
+    result["duration"] = duration
+    result["currency"] = "USD"
+    return result
+
 
 @router.get("/api/studio/library")
 def studio_library(
@@ -550,6 +682,61 @@ async def _apply_character_references(prompt: str, character_ids: List[str], db,
             
     return prompt
 
+@router.get("/api/studio/thumbnail/{filename}")
+def get_studio_thumbnail(request: Request, filename: str):
+    """Serve a video poster frame.
+
+    Ownership is resolved through the owning media row, the same way
+    /api/studio/media/{filename} does it.
+    """
+    user = effective_user(request)
+    if os.path.basename(filename) != filename or filename in (".", ".."):
+        raise HTTPException(404, "Thumbnail not found")
+
+    db = SessionLocal()
+    try:
+        m = db.query(StudioMedia).filter(StudioMedia.thumbnail == filename).first()
+        if not m or (m.owner and m.owner != user):
+            raise HTTPException(404, "Thumbnail not found")
+    finally:
+        db.close()
+
+    path = os.path.join(STUDIO_THUMBNAIL_DIR, filename)
+    if not os.path.isfile(path) or not _path_inside(STUDIO_THUMBNAIL_DIR, path):
+        raise HTTPException(404, "Thumbnail not found")
+    # Poster frames are immutable once written.
+    return FileResponse(path, headers={"Cache-Control": "private, max-age=604800"})
+
+
+class MediaPatchRequest(BaseModel):
+    favorite: Optional[bool] = None
+    prompt: Optional[str] = None
+
+
+@router.patch("/api/studio/{media_id}")
+async def update_studio_media(request: Request, media_id: str, req: MediaPatchRequest):
+    """Update mutable fields on a library item.
+
+    `favorite` existed on the model and was returned by the API, but there was
+    no way to set it — the flag was effectively dead.
+    """
+    user = require_studio_privilege(request)
+    db = SessionLocal()
+    try:
+        m = db.query(StudioMedia).filter(StudioMedia.id == media_id).first()
+        if not m or (m.owner and m.owner != user):
+            raise HTTPException(404, "Media not found")
+
+        if req.favorite is not None:
+            m.favorite = req.favorite
+        if req.prompt is not None:
+            m.prompt = req.prompt[:8000]
+        db.commit()
+        return _media_to_dict(m)
+    finally:
+        db.close()
+
+
 @router.delete("/api/studio/{media_id}")
 async def delete_studio_media(request: Request, media_id: str):
     user = require_studio_privilege(request)
@@ -580,7 +767,7 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
 
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://github.com/pewdiepie-archdaemon/odysseus",
+            "HTTP-Referer": STUDIO_REFERER,
             "X-OpenRouter-Title": "Odysseus Studio"
         }
         
@@ -589,6 +776,12 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
         }
         
         refs = []
+        # Reference images are downscaled before they go out. The video path
+        # already did this; photos sent the original, so a 12 MP phone photo
+        # became ~16 MB of base64 in the request body. An empty constraints
+        # dict makes find_best_size fall back to its 1024 px cap.
+        _photo_constraints: dict = {}
+
         # Backward compatibility for base_media_id string
         if req.base_media_id:
             for m_id in req.base_media_id.split(","):
@@ -597,7 +790,7 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
                     refs.append({
                         "type": "image_url",
                         "image_url": {
-                            "url": _get_base64_data_url(m_id, user)
+                            "url": _get_preprocessed_base64_data_url(m_id, _photo_constraints, user)
                         }
                     })
                     
@@ -609,7 +802,7 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
                     refs.append({
                         "type": "image_url",
                         "image_url": {
-                            "url": _get_base64_data_url(m_ref.id, user)
+                            "url": _get_preprocessed_base64_data_url(m_ref.id, _photo_constraints, user)
                         }
                     })
 
@@ -648,17 +841,24 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
                 raise HTTPException(500, "No image data returned from OpenRouter.")
             
             media_id = f"st_{uuid.uuid4().hex[:12]}"
-            filename = f"{media_id}.png"
-            filepath = os.path.join(STUDIO_MEDIA_DIR, filename)
-            
+
+            # The extension used to be hardcoded to .png even when the model
+            # answered with a JPEG or WebP URL, so the stored file's type and
+            # its name disagreed and clients mis-rendered it.
             if b64_data:
-                with open(filepath, "wb") as f:
-                    f.write(base64.b64decode(b64_data))
+                image_bytes = base64.b64decode(b64_data)
+                content_type = None
             else:
                 img_resp = await client.get(url_data)
                 img_resp.raise_for_status()
-                with open(filepath, "wb") as f:
-                    f.write(img_resp.content)
+                image_bytes = img_resp.content
+                content_type = img_resp.headers.get("content-type")
+
+            ext = _image_extension(image_bytes, content_type, url_data)
+            filename = f"{media_id}{ext}"
+            filepath = os.path.join(STUDIO_MEDIA_DIR, filename)
+            with open(filepath, "wb") as f:
+                f.write(image_bytes)
 
             new_media = StudioMedia(
                 id=media_id,
@@ -667,12 +867,20 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
                 prompt=req.prompt,
                 model=target_model,
                 owner=user,
+                seed=req.seed,
+                generation_mode="generate",
                 file_size=os.path.getsize(filepath)
             )
             db.add(new_media)
             db.commit()
             
             return _media_to_dict(new_media)
+    except HTTPException:
+        # HTTPException is an Exception, so without this the deliberate 400s
+        # above ("OpenRouter API key not configured", "No photo model
+        # specified") were re-raised as 500s and the client could no longer
+        # tell a misconfiguration from a server fault.
+        raise
     except Exception as e:
         logger.exception("Photo generation failed")
         raise HTTPException(500, str(e))
@@ -695,7 +903,7 @@ async def generate_video(request: Request, req: VideoGenRequest):
 
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://github.com/pewdiepie-archdaemon/odysseus",
+            "HTTP-Referer": STUDIO_REFERER,
             "X-OpenRouter-Title": "Odysseus Studio"
         }
         
@@ -830,15 +1038,255 @@ async def generate_video(request: Request, req: VideoGenRequest):
                 with open(filepath, "wb") as f:
                     f.write(vid_resp.content)
                 new_media.file_size = os.path.getsize(filepath)
-            
+
             db.add(new_media)
             db.commit()
+
+            if new_media.job_status == "completed":
+                thumb = await _generate_thumbnail(new_media)
+                if thumb:
+                    new_media.thumbnail = thumb
+                    db.commit()
+
             return _media_to_dict(new_media)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Video generation failed")
         raise HTTPException(500, str(e))
     finally:
         db.close()
+
+# ---------------------------------------------------------------------------
+# Video job finalisation
+#
+# A generated video only becomes a file on disk once somebody polls OpenRouter
+# and downloads the result. That used to happen exclusively inside the client's
+# poll request, so a job whose client went away — app backgrounded, killed,
+# network lost — stayed "pending" forever and the paid generation was lost.
+# The logic lives here so both the poll endpoint and the background finaliser
+# (see _studio_job_finaliser_loop in app.py) can drive it.
+# ---------------------------------------------------------------------------
+
+# One in-flight finalisation per media id: the request path and the background
+# loop can otherwise download and concatenate the same job twice.
+_job_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _job_lock(media_id: str) -> asyncio.Lock:
+    lock = _job_locks.get(media_id)
+    if lock is None:
+        # Keep the map from growing for the lifetime of the process. Only
+        # unlocked entries are dropped, so nothing waiting is disturbed.
+        if len(_job_locks) > 512:
+            for key in [k for k, v in _job_locks.items() if not v.locked()]:
+                _job_locks.pop(key, None)
+        lock = asyncio.Lock()
+        _job_locks[media_id] = lock
+    return lock
+
+
+def _poll_url_for(job_id: Optional[str]) -> Optional[str]:
+    """Build the OpenRouter polling URL from a stored job id.
+
+    Returns None when there is nothing to poll — job_id could be NULL, which
+    previously reached `.startswith` and raised AttributeError inside the
+    request.
+    """
+    if not job_id:
+        return None
+    poll_url = str(job_id)
+    if not poll_url.startswith("http"):
+        if not poll_url.startswith("/"):
+            poll_url = f"/api/v1/generation?id={poll_url}"
+        poll_url = f"https://openrouter.ai{poll_url}"
+    return poll_url
+
+
+async def _generate_thumbnail(media: StudioMedia) -> Optional[str]:
+    """Write a poster frame for a video and return its filename.
+
+    The library previously handed out only the full-size asset, so scrolling it
+    on a phone pulled entire videos just to draw tiles.
+    """
+    if media.media_type != "video" or not is_ffmpeg_available():
+        return None
+    src = os.path.join(STUDIO_MEDIA_DIR, media.filename)
+    if not os.path.isfile(src):
+        return None
+    try:
+        info = await get_video_info(src)
+        # A frame slightly into the clip is more representative than frame 0,
+        # which is often black.
+        at = min(1.0, max(0.0, (info.get("duration") or 2.0) * 0.25))
+        frame = await extract_frame_at(src, at)
+        thumb_name = f"{os.path.splitext(media.filename)[0]}_thumb.jpg"
+        thumb_path = os.path.join(STUDIO_THUMBNAIL_DIR, thumb_name)
+        os.makedirs(STUDIO_THUMBNAIL_DIR, exist_ok=True)
+
+        from routes.studio.studio_preprocess import _ensure_pil
+        if _ensure_pil():
+            from PIL import Image
+            import io as _io
+            img = Image.open(_io.BytesIO(frame)).convert("RGB")
+            img.thumbnail((640, 640), Image.LANCZOS)
+            img.save(thumb_path, format="JPEG", quality=82)
+        else:
+            thumb_name = f"{os.path.splitext(media.filename)[0]}_thumb.png"
+            thumb_path = os.path.join(STUDIO_THUMBNAIL_DIR, thumb_name)
+            with open(thumb_path, "wb") as f:
+                f.write(frame)
+        return thumb_name
+    except Exception as e:
+        logger.warning("Thumbnail generation failed for %s: %s", media.id, e)
+        return None
+
+
+async def finalize_video_job(media_id: str) -> bool:
+    """Poll one pending video job and, when it is done, persist the result.
+
+    Returns True when the job reached a terminal state (completed or failed).
+    Safe to call concurrently for the same id and safe to call repeatedly.
+    """
+    async with _job_lock(media_id):
+        db = SessionLocal()
+        try:
+            m = db.query(StudioMedia).filter(StudioMedia.id == media_id).first()
+            if not m:
+                return True
+            if m.job_status in ("completed", "failed"):
+                return True
+
+            poll_url = _poll_url_for(m.job_id)
+            if not poll_url:
+                m.job_status = "failed"
+                m.error = "No polling URL was returned for this generation."
+                db.commit()
+                return True
+
+            api_key = get_openrouter_api_key(db)
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+            async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
+                resp = await client.get(poll_url, headers=headers)
+                if resp.status_code not in (200, 202):
+                    # Transient upstream trouble: leave the job pending so the
+                    # next tick retries rather than burning the generation.
+                    logger.warning(
+                        "Polling %s failed: %s %s", media_id, resp.status_code, resp.text[:300]
+                    )
+                    return False
+
+                data = resp.json()
+                status = data.get("status")
+
+                if status == "failed":
+                    m.job_status = "failed"
+                    m.error = str(
+                        data.get("error") or data.get("message") or "The provider reported a failure."
+                    )[:2000]
+                    db.commit()
+                    return True
+
+                if status != "completed":
+                    return False
+
+                url_data = None
+                if "unsigned_urls" in data and data["unsigned_urls"]:
+                    url_data = data["unsigned_urls"][0]
+                elif (
+                    "data" in data and isinstance(data["data"], list)
+                    and len(data["data"]) > 0 and "url" in data["data"][0]
+                ):
+                    url_data = data["data"][0]["url"]
+
+                if not url_data:
+                    m.job_status = "failed"
+                    m.error = "The provider reported success but returned no video URL."
+                    db.commit()
+                    return True
+
+                filepath = os.path.join(STUDIO_MEDIA_DIR, m.filename)
+                req_headers = headers if "openrouter.ai" in url_data else None
+                vid_resp = await client.get(url_data, headers=req_headers)
+                vid_resp.raise_for_status()
+                with open(filepath, "wb") as f:
+                    f.write(vid_resp.content)
+
+            # Deferred concatenation for extend jobs.
+            if m.source_media_id and str(m.source_media_id).endswith(":concat"):
+                real_source_id = str(m.source_media_id).split(":")[0]
+                source = db.query(StudioMedia).filter(StudioMedia.id == real_source_id).first()
+                if source:
+                    source_path = os.path.join(STUDIO_MEDIA_DIR, source.filename)
+                    if os.path.exists(source_path):
+                        try:
+                            concat_path = os.path.join(
+                                STUDIO_MEDIA_DIR, f"stv_{uuid.uuid4().hex[:12]}.mp4"
+                            )
+                            await concatenate_videos(source_path, filepath, concat_path)
+                            os.replace(concat_path, filepath)
+                            logger.info("Concatenated extended video for %s", m.id)
+                        except Exception as e:
+                            logger.warning("Concatenation failed, keeping segment: %s", e)
+                            m.error = f"Extension generated, but joining it to the source failed: {e}"
+                m.source_media_id = real_source_id
+
+            if is_ffmpeg_available():
+                info = await get_video_info(filepath)
+                m.duration = info.get("duration") or m.duration
+                m.width = info.get("width") or m.width
+                m.height = info.get("height") or m.height
+                m.fps = info.get("fps") or m.fps
+
+            m.file_size = os.path.getsize(filepath)
+            m.job_status = "completed"
+            db.commit()
+
+            thumb = await _generate_thumbnail(m)
+            if thumb:
+                m.thumbnail = thumb
+                db.commit()
+
+            return True
+        except Exception as e:
+            logger.exception("Finalising video job %s failed", media_id)
+            try:
+                m = db.query(StudioMedia).filter(StudioMedia.id == media_id).first()
+                if m and m.job_status == "pending":
+                    m.error = str(e)[:2000]
+                    db.commit()
+            except Exception:
+                pass
+            return False
+        finally:
+            db.close()
+
+
+async def finalize_pending_video_jobs(max_age_hours: int = 48) -> int:
+    """Finalise every still-pending video job. Driven by the background loop."""
+    db = SessionLocal()
+    try:
+        cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+        rows = (
+            db.query(StudioMedia.id)
+            .filter(StudioMedia.job_status == "pending")
+            .filter(StudioMedia.created_at >= cutoff)
+            .all()
+        )
+        ids = [r[0] for r in rows]
+    finally:
+        db.close()
+
+    done = 0
+    for media_id in ids:
+        try:
+            if await finalize_video_job(media_id):
+                done += 1
+        except Exception:
+            logger.debug("Finaliser skipped %s", media_id, exc_info=True)
+    return done
+
 
 @router.get("/api/studio/jobs/{media_id}")
 async def check_video_job(request: Request, media_id: str):
@@ -848,85 +1296,24 @@ async def check_video_job(request: Request, media_id: str):
         m = db.query(StudioMedia).filter(StudioMedia.id == media_id).first()
         if not m or (m.owner and m.owner != user):
             raise HTTPException(404, "Media not found")
-        
-        if m.job_status == "completed":
-            return _media_to_dict(m)
-            
-        api_key = get_openrouter_api_key(db)
-        headers = {"Authorization": f"Bearer {api_key}"}
-        
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-            poll_url = m.job_id
-            if not poll_url.startswith("http"):
-                if not poll_url.startswith("/"):
-                    poll_url = f"/api/v1/generation?id={poll_url}"
-                poll_url = f"https://openrouter.ai{poll_url}"
-                
-            resp = await client.get(poll_url, headers=headers)
-            if resp.status_code not in (200, 202):
-                raise HTTPException(500, f"Polling failed: {resp.status_code} {resp.text}")
-                
-            data = resp.json()
-            status = data.get("status")
-            
-            if status == "completed":
-                url_data = None
-                
-                # Check for new video API format (unsigned_urls)
-                if "unsigned_urls" in data and data["unsigned_urls"]:
-                    url_data = data["unsigned_urls"][0]
-                # Fallback to image API format
-                elif "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0 and "url" in data["data"][0]:
-                    url_data = data["data"][0]["url"]
-                
-                if url_data:
-                    filepath = os.path.join(STUDIO_MEDIA_DIR, m.filename)
-                    req_headers = headers if "openrouter.ai" in url_data else None
-                    vid_resp = await client.get(url_data, headers=req_headers)
-                    vid_resp.raise_for_status()
-                    with open(filepath, "wb") as f:
-                        f.write(vid_resp.content)
-                    
-                    # Async concatenation
-                    if m.source_media_id and str(m.source_media_id).endswith(":concat"):
-                        real_source_id = str(m.source_media_id).split(":")[0]
-                        source = db.query(StudioMedia).filter(StudioMedia.id == real_source_id).first()
-                        if source:
-                            source_path = os.path.join(STUDIO_MEDIA_DIR, source.filename)
-                            if os.path.exists(source_path):
-                                try:
-                                    import uuid
-                                    concat_id = f"stv_{uuid.uuid4().hex[:12]}"
-                                    concat_path = os.path.join(STUDIO_MEDIA_DIR, f"{concat_id}.mp4")
-                                    await concatenate_videos(source_path, filepath, concat_path)
-                                    
-                                    # Overwrite the segment with concatenated video
-                                    os.replace(concat_path, filepath)
-                                    logger.info("Concatenated async extended video for %s", m.id)
-                                    
-                                    if is_ffmpeg_available():
-                                        c_info = await get_video_info(filepath)
-                                        m.duration = c_info.get("duration")
-                                        m.width = c_info.get("width")
-                                        m.height = c_info.get("height")
-                                        m.fps = c_info.get("fps")
-                                except Exception as e:
-                                    logger.warning("Async concatenation failed, keeping segment: %s", e)
-                        m.source_media_id = real_source_id
-
-                    m.file_size = os.path.getsize(filepath)
-                    m.job_status = "completed"
-                    db.commit()
-                else:
-                    m.job_status = "failed"
-                    db.commit()
-            elif status == "failed":
-                m.job_status = "failed"
-                db.commit()
-                
+        if m.job_status in ("completed", "failed"):
             return _media_to_dict(m)
     finally:
         db.close()
+
+    # Whoever gets there first finalises; the lock keeps the background loop
+    # and this request from doing the work twice.
+    await finalize_video_job(media_id)
+
+    db = SessionLocal()
+    try:
+        m = db.query(StudioMedia).filter(StudioMedia.id == media_id).first()
+        if not m:
+            raise HTTPException(404, "Media not found")
+        return _media_to_dict(m)
+    finally:
+        db.close()
+
 
 # ---------------------------------------------------------------------------
 # Video Upload
@@ -985,6 +1372,12 @@ async def studio_upload_video(request: Request, file: UploadFile = File(...)):
         )
         db.add(new_media)
         db.commit()
+
+        thumb = await _generate_thumbnail(new_media)
+        if thumb:
+            new_media.thumbnail = thumb
+            db.commit()
+
         return _media_to_dict(new_media)
     finally:
         db.close()
@@ -1044,7 +1437,7 @@ async def extend_video(request: Request, req: VideoExtendRequest):
 
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://github.com/pewdiepie-archdaemon/odysseus",
+            "HTTP-Referer": STUDIO_REFERER,
             "X-OpenRouter-Title": "Odysseus Studio",
         }
 
@@ -1273,7 +1666,7 @@ async def edit_video(request: Request, req: VideoEditRequest):
 
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://github.com/pewdiepie-archdaemon/odysseus",
+            "HTTP-Referer": STUDIO_REFERER,
             "X-OpenRouter-Title": "Odysseus Studio",
         }
 
@@ -1596,14 +1989,14 @@ async def generate_magic_prompt(request: Request, req: MagicPromptRequest):
         messages.append({"role": "user", "content": user_content})
         
         payload = {
-            "model": req.model or "anthropic/claude-3.5-sonnet",
+            "model": req.model or STUDIO_MAGIC_PROMPT_MODEL,
             "messages": messages,
             "max_tokens": 1000
         }
         
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://github.com/pewdiepie-archdaemon/odysseus",
+            "HTTP-Referer": STUDIO_REFERER,
             "X-OpenRouter-Title": "Odysseus Studio"
         }
         
