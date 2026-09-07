@@ -1,0 +1,271 @@
+/* ============================================================
+   Fitness Coach — Odysseus
+   Built on the app's real tokens (--bg / --fg / --panel / --border /
+   --accent-primary). The previous markup styled against --bg-hover and
+   --bg-tertiary, neither of which this app defines, so the cards fell back
+   to a hardcoded light grey and the buttons painted transparent.
+   ============================================================ */
+
+.fit-scope {
+  --fit-accent: var(--accent-primary, var(--color-accent, #00aaff));
+  --fit-surface: color-mix(in srgb, var(--panel) 55%, var(--bg));
+  --fit-raised: color-mix(in srgb, var(--panel) 80%, var(--bg));
+  --fit-line: color-mix(in srgb, var(--border) 70%, transparent);
+  --fit-muted: color-mix(in srgb, var(--fg) 58%, transparent);
+  --fit-faint: color-mix(in srgb, var(--fg) 36%, transparent);
+  --fit-good: #3fb950;
+  --fit-warn: var(--color-warning, #f0ad4e);
+  --fit-bad: #f85149;
+  --fit-radius: 10px;
+}
+
+.fit-body { display: flex; flex-direction: column; gap: 18px; }
+
+.fit-coverage {
+  margin-right: 10px;
+  font-size: 11px;
+  font-weight: normal;
+  color: var(--fit-muted);
+  white-space: nowrap;
+}
+
+/* ── Error banner (replaces alert()) ────────────────────────── */
+.fit-error {
+  display: none;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  border-radius: var(--fit-radius);
+  color: var(--fit-bad);
+  background: color-mix(in srgb, var(--fit-bad) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--fit-bad) 32%, transparent);
+}
+.fit-error.visible { display: block; }
+
+/* ── Score cards ────────────────────────────────────────────── */
+.fit-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.fit-card {
+  padding: 14px 16px;
+  background: var(--fit-surface);
+  border: 1px solid var(--fit-line);
+  border-radius: var(--fit-radius);
+}
+
+.fit-card-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fit-faint);
+}
+
+.fit-card-score-row { display: flex; align-items: baseline; gap: 8px; }
+
+.fit-card-score {
+  display: block;
+  margin: 6px 0 4px;
+  font-size: 32px;
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.fit-card-score-row .fit-card-score { margin-bottom: 4px; }
+
+.fit-card-text { font-size: 12.5px; line-height: 1.45; color: var(--fit-muted); }
+
+.fit-trend { font-size: 14px; font-weight: 700; }
+.fit-trend[data-dir="up"] { color: var(--fit-good); }
+.fit-trend[data-dir="down"] { color: var(--fit-bad); }
+.fit-trend[data-dir="neutral"] { color: var(--fit-faint); }
+
+/* Confidence is shown, not hidden: a score from three days of data should
+   not look as certain as one from fourteen. */
+.fit-badge {
+  padding: 1px 7px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+.fit-badge[data-level="high"] { color: var(--fit-good); }
+.fit-badge[data-level="medium"] { color: var(--fit-warn); }
+.fit-badge[data-level="low"] { color: var(--fit-bad); }
+.fit-badge:empty { display: none; }
+
+/* ── Recommendation ─────────────────────────────────────────── */
+.fit-reco {
+  padding: 12px 14px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fit-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--fit-accent) 28%, transparent);
+  border-left: 3px solid var(--fit-accent);
+  border-radius: var(--fit-radius);
+}
+
+/* ── Sections ───────────────────────────────────────────────── */
+.fit-section { display: flex; flex-direction: column; gap: 8px; }
+
+.fit-section-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fit-faint);
+}
+
+.fit-muted { color: var(--fit-faint); font-weight: 400; font-size: 12px; }
+
+.fit-notable { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+
+.fit-notable li {
+  padding: 8px 11px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg);
+  background: var(--fit-surface);
+  border-left: 2px solid var(--fit-faint);
+  border-radius: 0 6px 6px 0;
+}
+.fit-notable li[data-sev="warn"] { border-left-color: var(--fit-warn); }
+.fit-notable li[data-sev="bad"] { border-left-color: var(--fit-bad); }
+.fit-notable li[data-sev="good"] { border-left-color: var(--fit-good); }
+.fit-notable li.fit-muted { border-left-color: transparent; background: transparent; padding-left: 0; }
+
+/* ── Sparklines ─────────────────────────────────────────────── */
+.fit-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.fit-chart {
+  padding: 10px 12px;
+  background: var(--fit-surface);
+  border: 1px solid var(--fit-line);
+  border-radius: var(--fit-radius);
+}
+
+.fit-chart-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.fit-chart-name {
+  font-size: 11.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--fit-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fit-chart-last { font-size: 13px; font-weight: 700; color: var(--fg); font-variant-numeric: tabular-nums; }
+.fit-chart svg { display: block; width: 100%; height: 40px; overflow: visible; }
+.fit-spark-line { fill: none; stroke: var(--fit-accent); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.fit-spark-area { fill: color-mix(in srgb, var(--fit-accent) 14%, transparent); stroke: none; }
+.fit-spark-dot { fill: var(--fit-accent); }
+.fit-spark-base { stroke: var(--fit-faint); stroke-width: 1; stroke-dasharray: 3 3; }
+
+/* ── Notes ──────────────────────────────────────────────────── */
+.fit-notes { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+
+.fit-notes li {
+  display: flex;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 12.5px;
+  color: var(--fg);
+  border-bottom: 1px solid var(--fit-line);
+}
+.fit-notes li:last-child { border-bottom: none; }
+.fit-note-date { flex-shrink: 0; color: var(--fit-faint); font-variant-numeric: tabular-nums; }
+
+.fit-note-form { display: flex; gap: 8px; margin-top: 4px; }
+
+.fit-scope .fit-note-input {
+  flex: 1;
+  min-width: 0;
+  height: auto;
+  padding: 8px 11px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--fit-raised);
+  border: 1px solid var(--fit-line);
+  border-radius: 6px;
+}
+.fit-scope .fit-note-input:focus-visible {
+  outline: none;
+  border-color: var(--fit-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fit-accent) 40%, transparent);
+}
+
+/* ── Buttons ────────────────────────────────────────────────── */
+.fit-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+.fit-scope .fit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: auto;
+  padding: 9px 15px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+  background: var(--fit-raised);
+  border: 1px solid var(--fit-line);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+}
+.fit-scope .fit-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) 8%, var(--fit-raised));
+  border-color: var(--border);
+}
+.fit-scope .fit-btn:disabled { opacity: 0.5; cursor: default; }
+
+.fit-scope .fit-btn-primary {
+  color: #fff;
+  background: var(--fit-accent);
+  border-color: var(--fit-accent);
+}
+.fit-scope .fit-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fit-accent) 85%, #000);
+  border-color: var(--fit-accent);
+}
+
+/* White-on-accent is legible against a dark ground but not against a light
+   one — #00aaff with white text lands near 2.5:1. Darken the fill for the
+   light theme only, so the dark theme keeps matching the rest of the app. */
+:root.light .fit-scope .fit-btn-primary {
+  background: color-mix(in srgb, var(--fit-accent) 62%, #000);
+  border-color: color-mix(in srgb, var(--fit-accent) 62%, #000);
+}
+:root.light .fit-scope .fit-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fit-accent) 50%, #000);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fit-scope * { transition: none !important; animation: none !important; }
+}
+
+@media (max-width: 640px) {
+  .fit-actions { flex-direction: column-reverse; }
+  .fit-scope .fit-btn { justify-content: center; }
+}

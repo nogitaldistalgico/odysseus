@@ -247,6 +247,7 @@
   <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/FiraCode-SemiBold.woff2">
   <link rel="stylesheet" href="/static/style.css?v=20260808startupshell1">
   <link rel="stylesheet" href="/static/css/opencode.css">
+  <link rel="stylesheet" href="/static/css/fitness.css">
   <link rel="modulepreload" href="/static/app.js?v=20260815toolapproval4">
   <link rel="modulepreload" href="/static/js/chat.js?v=20260815toolapproval4">
   <link rel="modulepreload" href="/static/js/ui.js">
@@ -1436,42 +1437,71 @@
   </div>
 
   <!-- Fitness Coach Modal -->
-  <div id="fitness-modal" class="modal hidden">
-    <div class="modal-content" role="dialog" aria-label="Fitness Coach Dashboard" style="width: min(800px, 90vw);">
+  <div id="fitness-modal" class="modal hidden fit-scope">
+    <div class="modal-content" role="dialog" aria-label="Fitness Coach Dashboard" style="width: min(880px, 94vw);">
       <div class="modal-header">
         <h4 style="margin:0;margin-right:auto">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px;margin-right:6px"><path d="M20.42 4.58a5.4 5.4 0 0 0-7.65 0l-.77.78-.77-.78a5.4 5.4 0 0 0-7.65 0C1.46 6.7 1.33 10.28 4 13l8 8 8-8c2.67-2.72 2.54-6.3.42-8.42z"/></svg>Fitness Coach
         </h4>
+        <span id="fitness-coverage" class="fit-coverage"></span>
         <button class="close-btn" id="close-fitness-modal" aria-label="Close fitness dashboard">✖</button>
       </div>
-      <div class="modal-body" style="display: flex; flex-direction: column; gap: 20px;">
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-          <div style="background: var(--bg-hover, #f0f0f0); padding: 15px; border-radius: 8px;">
-            <div style="font-size: 12px; text-transform: uppercase; font-weight: bold; opacity: 0.7;">Recovery</div>
-            <div id="fitness-recovery-score" style="font-size: 32px; font-weight: 800; margin: 5px 0;">--</div>
-            <div id="fitness-recovery-text" style="font-size: 13px; opacity: 0.8;">Loading...</div>
+      <div class="modal-body fit-body">
+
+        <div id="fitness-error" class="fit-error" role="status"></div>
+
+        <div class="fit-cards">
+          <div class="fit-card">
+            <div class="fit-card-label">Recovery</div>
+            <div id="fitness-recovery-score" class="fit-card-score">--</div>
+            <div id="fitness-recovery-text" class="fit-card-text">Lädt…</div>
           </div>
-          <div style="background: var(--bg-hover, #f0f0f0); padding: 15px; border-radius: 8px;">
-            <div style="font-size: 12px; text-transform: uppercase; font-weight: bold; opacity: 0.7;">Condition</div>
-            <div id="fitness-condition-score" style="font-size: 32px; font-weight: 800; margin: 5px 0;">--</div>
-            <div id="fitness-condition-text" style="font-size: 13px; opacity: 0.8;">Loading...</div>
+          <div class="fit-card">
+            <div class="fit-card-label">
+              Condition
+              <span id="fitness-condition-confidence" class="fit-badge"></span>
+            </div>
+            <div class="fit-card-score-row">
+              <span id="fitness-condition-score" class="fit-card-score">--</span>
+              <span id="fitness-condition-trend" class="fit-trend"></span>
+            </div>
+            <div id="fitness-condition-text" class="fit-card-text">Lädt…</div>
           </div>
-          <div style="background: var(--bg-hover, #f0f0f0); padding: 15px; border-radius: 8px;">
-            <div style="font-size: 12px; text-transform: uppercase; font-weight: bold; opacity: 0.7;">Movement</div>
-            <div id="fitness-movement-score" style="font-size: 32px; font-weight: 800; margin: 5px 0;">--</div>
-            <div id="fitness-movement-text" style="font-size: 13px; opacity: 0.8;">Loading...</div>
+          <div class="fit-card">
+            <div class="fit-card-label">Movement</div>
+            <div id="fitness-movement-score" class="fit-card-score">--</div>
+            <div id="fitness-movement-text" class="fit-card-text">Lädt…</div>
           </div>
         </div>
-        <div style="display: flex; justify-content: flex-end; gap: 10px;">
-          <button id="fitness-note-btn" style="padding: 10px 16px; background: var(--bg-tertiary); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 6px;" title="Notiz hinzufügen">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
-            Notiz
-          </button>
-          <button id="fitness-calc-btn" style="padding: 10px 16px; background: var(--bg-tertiary); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 6px;" title="Condition-Score neu berechnen">
+
+        <div id="fitness-recommendation" class="fit-reco" hidden></div>
+
+        <section class="fit-section">
+          <h5 class="fit-section-title">Auffälligkeiten</h5>
+          <ul id="fitness-notable" class="fit-notable"><li class="fit-muted">Lädt…</li></ul>
+        </section>
+
+        <section class="fit-section">
+          <h5 class="fit-section-title">Verlauf <span class="fit-muted">· 30 Tage</span></h5>
+          <div id="fitness-charts" class="fit-charts"><div class="fit-muted">Lädt…</div></div>
+        </section>
+
+        <section class="fit-section" id="fitness-notes-section">
+          <h5 class="fit-section-title">Notizen <span id="fitness-notes-ttl" class="fit-muted"></span></h5>
+          <ul id="fitness-notes" class="fit-notes"></ul>
+          <form id="fitness-note-form" class="fit-note-form">
+            <input id="fitness-note-input" class="fit-note-input" type="text" maxlength="2000"
+                   placeholder="z.B. schlecht geschlafen, Umzug, Infekt im Anmarsch…" autocomplete="off">
+            <button type="submit" id="fitness-note-btn" class="fit-btn">Hinzufügen</button>
+          </form>
+        </section>
+
+        <div class="fit-actions">
+          <button id="fitness-calc-btn" class="fit-btn" title="Condition-Score neu berechnen">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
             Score berechnen
           </button>
-          <button id="fitness-chat-btn" style="padding: 10px 16px; background: var(--fg); color: var(--bg); border: none; border-radius: 6px; font-weight: bold; cursor: pointer;">Chat with Coach</button>
+          <button id="fitness-chat-btn" class="fit-btn fit-btn-primary">Chat with Coach</button>
         </div>
       </div>
     </div>
