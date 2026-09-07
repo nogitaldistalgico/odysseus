@@ -413,9 +413,22 @@ class StudioMedia(TimestampMixin, Base):
     source_media_id = Column(String, nullable=True)      # ID of source video for extend/edit
     generation_mode = Column(String, nullable=True)      # "generate", "upload", "extend_frame", "extend_continuation", "edit"
 
+    # Why a job ended up in job_status="failed". Without this the client can
+    # only render "failed" with no cause.
+    error      = Column(Text, nullable=True)
+    # Seed actually used, so a generation can be re-rolled reproducibly.
+    seed       = Column(Integer, nullable=True)
+    # Poster frame for videos, so a library scroll doesn't pull full videos.
+    thumbnail  = Column(String, nullable=True)
+
     __table_args__ = (
         Index('ix_studio_media_active', 'is_active', 'created_at'),
         Index('ix_studio_media_owner', 'owner'),
+        # The library query is WHERE owner=? AND is_active ORDER BY created_at
+        # DESC; the two single-column indexes above force a sort on every page.
+        Index('ix_studio_media_owner_active_created', 'owner', 'is_active', 'created_at'),
+        # The pending-job finaliser scans on job_status.
+        Index('ix_studio_media_job_status', 'job_status'),
     )
 
 class StudioCharacter(TimestampMixin, Base):
@@ -2219,6 +2232,49 @@ def init_db():
     _migrate_encrypt_signatures()
     _migrate_encrypt_endpoint_keys()
     _migrate_backfill_task_folders()
+    _migrate_add_studio_media_columns()
+
+
+def _migrate_add_studio_media_columns():
+    """Add error/seed/thumbnail to studio_media and the composite indexes.
+
+    Guarded + idempotent: every column add is gated on PRAGMA table_info and
+    the indexes use IF NOT EXISTS, so this is a no-op on later restarts."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(studio_media)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if not columns:
+            return  # table not created yet; SQLAlchemy will build it with the columns
+        for name, ddl in (
+            ("error", "TEXT"),
+            ("seed", "INTEGER"),
+            ("thumbnail", "VARCHAR"),
+        ):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE studio_media ADD COLUMN {name} {ddl}")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_studio_media_owner_active_created "
+            "ON studio_media(owner, is_active, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_studio_media_job_status "
+            "ON studio_media(job_status)"
+        )
+        conn.commit()
+        logging.getLogger(__name__).info("Migrated: studio_media error/seed/thumbnail + indexes")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"studio_media migration failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _migrate_backfill_task_folders():
