@@ -1082,6 +1082,20 @@ function initializeEventListeners() {
     });
   }
 
+  // Media Studio tool button — lazy-loads the studio bundle on first use.
+  const toolStudioBtn = el('tool-studio-btn');
+  if (toolStudioBtn) {
+    toolStudioBtn.addEventListener('click', async () => {
+      const Modals = await import('./js/modalManager.js');
+      // Minimised → restore; otherwise open/close like the other tool windows.
+      if (!Modals.toggle('studio-modal')) {
+        const m = await import('./js/studio/studio.js');
+        if (m.isStudioOpen()) m.closeStudio();
+        else m.openStudio();
+      }
+    });
+  }
+
   // Calendar tool button
   const toolCalendarBtn = el('tool-calendar-btn');
   if (toolCalendarBtn) {
@@ -1238,6 +1252,10 @@ function initializeEventListeners() {
     '/code':     () => {
       _collapseSidebarToRail();
       import('./js/opencode/opencode.js').then(m => m.openCodeView());
+    },
+    '/studio':   () => {
+      _collapseSidebarToRail();
+      import('./js/studio/studio.js').then(m => m.openStudio({ fullscreen: true }));
     },
   };
   const _opener = _routeOpen[urlPath];
@@ -3766,6 +3784,7 @@ function startOdysseusApp() {
     'rail-theme':     'tool-theme-btn',
     'rail-email':     'email-section-title',
     'rail-code':      'tool-code-btn',
+    'rail-studio':    'tool-studio-btn',
   };
   Object.entries(_railToolMap).forEach(([railId, toolId]) => {
     const railBtn = el(railId);

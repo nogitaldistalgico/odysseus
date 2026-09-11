@@ -962,6 +962,10 @@ async def serve_library(request: Request):
 async def serve_code(request: Request):
     return await serve_index(request)
 
+@app.get("/studio")
+async def serve_studio(request: Request):
+    return await serve_index(request)
+
 @app.get("/backgrounds")
 async def serve_backgrounds(request: Request):
     """Sandbox page for prototyping background effects. No auth required."""

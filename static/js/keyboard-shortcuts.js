@@ -108,6 +108,7 @@ export function initKeyboardShortcuts(modules) {
     'compare-model-overlay':  'tool-compare-btn',
     'calendar-modal':         'tool-calendar-btn',
     'email-lib-modal':        'email-section-title',
+    'studio-modal':           'tool-studio-btn',
   };
   let _lastWindow = 'settings-modal';
 

@@ -149,6 +149,8 @@ const _LABELS = {
   // Virtual id — the doc editor pane isn't a modal, but it minimizes to a
   // chip via the same dock infrastructure.
   'doc-panel':         { label: 'Document', icon: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8' },
+  // Media Studio (clapperboard glyph, multi-path → full SVG markup).
+  'studio-modal':      { label: 'Studio',   icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z"/><path d="m6.2 5.3 3.1 3.9"/><path d="m12.4 3.4 3.1 4"/><path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>' },
 };
 
 function _ensureDock() {
@@ -1422,6 +1424,7 @@ const _AUTO_WIRE = {
   // the legacy .modal-dock-item.
   'custom-preset-modal':  { rail: null,             sidebar: null },
   'opencode-modal':       { rail: 'rail-code',      sidebar: 'tool-code-btn' },
+  'studio-modal':         { rail: 'rail-studio',    sidebar: 'tool-studio-btn' },
 };
 
 function _autoRegister(id) {
@@ -1474,6 +1477,9 @@ const _SWIPE_DOWN_MINIMIZES = new Set([
   'cookbook-modal',
   'calendar-modal',
   'email-lib-modal',
+  // Generations keep rendering while the Studio is docked; a swipe must not
+  // tear the composer state down.
+  'studio-modal',
 ]);
 // Same idea but matched by id prefix — so dynamically-created modals
 // (per-email reader tabs) survive swipe-down too.

@@ -141,6 +141,7 @@ The largest and most central subsystem. Chat submission → backend SSE → prog
 | **`calendar.js`** / **`calendar/utils.js`** / **`calendar/reminders.js`** | Calendar views, event forms, reminders. |
 | **`tasks.js`** | Scheduled task/recurring LLM job UI. |
 | **`notes.js`** | Notes and todo panel, reminders, pinboard. |
+| **`studio/studio.js`** | Media Studio tool window (`#studio-modal`): store, per-user prefs (`/api/prefs/studio_web_prefs`), video-job poller, modalManager/rail/`/studio` wiring. Panes: `studio/composer.js` (photo/video/extend/edit composer + result stage), `studio/library.js` (grid, upload, detail view), `studio/characters.js`, `studio/picker.js` (library/Gallery picker sheet), `studio/prefsPanel.js`. `studio/payload.js` holds the DOM-free request builders that mirror `routes/studio/studio_routes.py`; `studio/api.js` the fetch wrappers. |
 
 ---
 
