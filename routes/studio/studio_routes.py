@@ -1052,6 +1052,19 @@ async def generate_video(request: Request, req: VideoGenRequest):
         if frame_imgs:
             payload["frame_images"] = frame_imgs
 
+        # The request model accepted these all along, but they never reached
+        # the payload — only extend_video forwarded them — so a client's
+        # duration / resolution / aspect ratio / audio choice was silently
+        # dropped and the provider defaults were used instead.
+        if req.duration is not None:
+            payload["duration"] = req.duration
+        if req.resolution:
+            payload["resolution"] = req.resolution
+        if req.aspect_ratio:
+            payload["aspect_ratio"] = req.aspect_ratio
+        if req.generate_audio is not None:
+            payload["generate_audio"] = req.generate_audio
+
         # Validate / correct resolution, aspect_ratio, duration against
         # what the target model actually supports.
         payload = validate_payload_params(payload, constraints)

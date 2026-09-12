@@ -1,0 +1,129 @@
+"""POST /api/studio/generate/video must forward the generation parameters.
+
+VideoGenRequest accepted duration / resolution / aspect_ratio / generate_audio
+from the start, and the /api/studio/models constraints exist so clients can
+offer exactly those choices — but generate_video() built its OpenRouter
+payload from model, prompt and the image inputs only, so every choice was
+silently replaced by the provider default. (extend_video() always forwarded
+them.) These tests pin the forwarding, plus the existing constraint clamping
+that runs on top of it.
+
+The handler is called directly with its collaborators monkeypatched, the same
+way tests/test_ai_image_url_safety.py drives the image generator; the fake
+httpx client captures the payload that would have gone to OpenRouter.
+"""
+import httpx
+
+import routes.studio.studio_routes as sr
+
+
+class _SubmitResponse:
+    status_code = 202
+    text = ""
+
+    def json(self):
+        return {"id": "gen-1", "polling_url": "https://openrouter.ai/api/v1/videos/gen-1"}
+
+
+class _FakeSession:
+    def add(self, obj):
+        pass
+
+    def commit(self):
+        pass
+
+    def refresh(self, obj):
+        pass
+
+    def close(self):
+        pass
+
+
+def _patch(monkeypatch, constraints, captured):
+    async def _post(self, url, json=None, headers=None):
+        captured["url"] = url
+        captured["json"] = json
+        return _SubmitResponse()
+
+    class _AsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        post = _post
+
+    async def _constraints(model_id):
+        return constraints
+
+    monkeypatch.setattr(httpx, "AsyncClient", _AsyncClient)
+    monkeypatch.setattr(sr, "require_studio_privilege", lambda request: "tester")
+    monkeypatch.setattr(sr, "get_openrouter_api_key", lambda db: "sk-test")
+    monkeypatch.setattr(sr, "load_settings", lambda: {})
+    monkeypatch.setattr(sr, "get_user_setting", lambda key, user, default=None: default)
+    monkeypatch.setattr(sr, "get_model_constraints", _constraints)
+    monkeypatch.setattr(sr, "SessionLocal", _FakeSession)
+
+
+async def test_generate_video_forwards_duration_resolution_aspect_and_audio(monkeypatch):
+    captured = {}
+    _patch(monkeypatch, {}, captured)
+
+    result = await sr.generate_video(
+        object(),
+        sr.VideoGenRequest(
+            prompt="a slow push-in on a lighthouse",
+            model="google/veo-3.1",
+            duration=8,
+            resolution="720p",
+            aspect_ratio="16:9",
+            generate_audio=False,
+        ),
+    )
+
+    assert captured["url"] == "https://openrouter.ai/api/v1/videos"
+    payload = captured["json"]
+    assert payload["model"] == "google/veo-3.1"
+    assert payload["prompt"] == "a slow push-in on a lighthouse"
+    assert payload["duration"] == 8
+    assert payload["resolution"] == "720p"
+    assert payload["aspect_ratio"] == "16:9"
+    assert payload["generate_audio"] is False
+    # Nothing else sneaks in when no images are attached.
+    assert "input_references" not in payload and "frame_images" not in payload
+    # The job is stored as pending with the polling URL as its job id.
+    assert result["job_status"] == "pending"
+    assert result["job_id"] == "https://openrouter.ai/api/v1/videos/gen-1"
+
+
+async def test_generate_video_omits_unset_params(monkeypatch):
+    captured = {}
+    _patch(monkeypatch, {}, captured)
+
+    await sr.generate_video(object(), sr.VideoGenRequest(prompt="rain on a window", model="m/x"))
+
+    payload = captured["json"]
+    assert set(payload) == {"model", "prompt"}
+
+
+async def test_generate_video_params_are_clamped_to_model_constraints(monkeypatch):
+    captured = {}
+    _patch(
+        monkeypatch,
+        {"supported_durations": [4, 8], "supported_resolutions": ["720p"], "supported_aspect_ratios": ["16:9", "9:16"]},
+        captured,
+    )
+
+    await sr.generate_video(
+        object(),
+        sr.VideoGenRequest(prompt="x", model="m/x", duration=7, resolution="4k", aspect_ratio="9:16"),
+    )
+
+    payload = captured["json"]
+    assert payload["duration"] == 8          # nearest supported value
+    assert "resolution" not in payload       # unsupported → dropped, not sent blindly
+    assert payload["aspect_ratio"] == "9:16"  # supported → kept
