@@ -118,18 +118,21 @@ export function capabilityBadges(model, kind) {
 
 /**
  * Keep `current` when it is one of `allowed`; otherwise fall back to the first
- * allowed value. When the model publishes no list the value is left as-is
- * (null means "let the provider pick").
+ * allowed value. When the model publishes no list the answer is null ("let
+ * the provider pick"): the UI shows no control for it, so nothing may be sent
+ * — carrying a value over from a previously selected model made OpenRouter
+ * reject the request for models that do not take that parameter at all.
  */
 export function pickAllowed(current, allowed) {
-  if (!Array.isArray(allowed) || allowed.length === 0) return current ?? null;
+  if (!Array.isArray(allowed) || allowed.length === 0) return null;
   const has = allowed.some(v => String(v) === String(current));
   return has ? allowed.find(v => String(v) === String(current)) : allowed[0];
 }
 
-/** Snap a numeric duration to the nearest allowed value (mirrors the server). */
+/** Snap a numeric duration to the nearest allowed value (mirrors the server);
+ *  null when the model publishes no durations. */
 export function nearestDuration(value, allowed) {
-  if (!Array.isArray(allowed) || allowed.length === 0) return value ?? null;
+  if (!Array.isArray(allowed) || allowed.length === 0) return null;
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return allowed[0];
   const v = Number(value);
   return allowed.reduce((best, d) => (Math.abs(d - v) < Math.abs(best - v) ? d : best), allowed[0]);
@@ -141,7 +144,7 @@ export function nearestDuration(value, allowed) {
  */
 export function resolveVideoParams(model, params = {}) {
   const c = modelCapabilities(model, 'video');
-  if (!c) return { resolution: params.resolution ?? null, aspectRatio: params.aspectRatio ?? null, duration: params.duration ?? null };
+  if (!c) return { resolution: null, aspectRatio: null, duration: null };
   return {
     resolution: pickAllowed(params.resolution, c.resolutions),
     aspectRatio: pickAllowed(params.aspectRatio, c.aspectRatios),

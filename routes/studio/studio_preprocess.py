@@ -83,6 +83,10 @@ async def _fetch_video_model_constraints() -> Dict[str, Any]:
                     "supported_sizes": m.get("supported_sizes", []),
                     "supported_durations": m.get("supported_durations", []),
                     "supported_frame_images": m.get("supported_frame_images"),
+                    # Whether the model takes generate_audio at all; the
+                    # /api/studio/models listing already exposes this, the
+                    # generation path needs it to decide what to forward.
+                    "generate_audio": m.get("generate_audio", False),
                     "pricing_skus": m.get("pricing_skus", {}),
                     "description": m.get("description", ""),
                     "allowed_passthrough_parameters": m.get("allowed_passthrough_parameters", []),

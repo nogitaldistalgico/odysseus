@@ -96,6 +96,16 @@ def test_constraints_resolve_to_supported_values():
     assert _run(body) == {"resolution": "720p", "aspectRatio": "9:16", "duration": 8}
 
 
+def test_unlisted_params_resolve_to_null_not_stale_values():
+    """A model without duration/resolution lists (runway/aleph-2) must not
+    inherit the values chosen for the previously selected model."""
+    body = """
+    const m = { id: 'runway/aleph-2', name: 'Aleph', supported_resolutions: null, supported_aspect_ratios: ['16:9', '9:16'], supported_durations: null };
+    console.log(JSON.stringify(resolveVideoParams(m, { resolution: '720p', aspectRatio: '9:16', duration: 8 })));
+    """
+    assert _run(body) == {"resolution": None, "aspectRatio": "9:16", "duration": None}
+
+
 def test_tri_state_capabilities_are_preserved():
     body = """
     const c = modelCapabilities({ id: 'v', name: 'v', supports_frame_images: null, supports_character_reference: null }, 'video');

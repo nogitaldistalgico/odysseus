@@ -68,6 +68,8 @@ export function createComposer(root, ctx) {
     aspectRatio: null,
     duration: null,
     generateAudio: null,
+    /** Edit mode only; null = keep the source video's aspect ratio. */
+    editAspectRatio: null,
     source: null,
     useRealContinuation: false,
     concatenate: true,
@@ -204,7 +206,7 @@ export function createComposer(root, ctx) {
       seed: state.seed,
       steps: state.steps,
       resolution: state.resolution,
-      aspectRatio: state.aspectRatio,
+      aspectRatio: state.videoMode === 'edit' ? state.editAspectRatio : state.aspectRatio,
       duration: state.duration,
       generateAudio: state.generateAudio,
       sourceId: state.source?.id || null,
@@ -328,8 +330,11 @@ export function createComposer(root, ctx) {
     const r = resolveVideoParams(m, state);
     state.resolution = r.resolution; state.aspectRatio = r.aspectRatio; state.duration = r.duration;
     const c = modelCapabilities(m, 'video');
-    if (c.audio === false) state.generateAudio = null;
-    else if (c.audio === true && state.generateAudio === null) state.generateAudio = true;
+    // generate_audio only travels to models that publish the flag; anything
+    // else is left to the provider rather than sent on a guess.
+    if (c.audio !== true) state.generateAudio = null;
+    else if (state.generateAudio === null) state.generateAudio = true;
+    if (state.editAspectRatio && !c.aspectRatios.includes(state.editAspectRatio)) state.editAspectRatio = null;
   }
 
   function setModel(id) {
@@ -491,7 +496,13 @@ export function createComposer(root, ctx) {
         if (vm !== 'edit') {
           if (c.resolutions.length) html += `<div class="st-field"><span class="st-field-label">Resolution</span><div class="st-chips" data-param="resolution">${c.resolutions.map(r => chip(r, r, state.resolution === r)).join('')}</div></div>`;
         }
-        if (c.aspectRatios.length) html += `<div class="st-field"><span class="st-field-label">Aspect ratio</span><div class="st-chips st-chips-ratio" data-param="aspectRatio">${c.aspectRatios.map(a => ratioChip(a, state.aspectRatio === a)).join('')}</div></div>`;
+        if (c.aspectRatios.length) {
+          if (vm === 'edit') {
+            html += `<div class="st-field"><span class="st-field-label">Aspect ratio <span class="st-hint">Auto keeps the source video's</span></span><div class="st-chips st-chips-ratio" data-param="editAspectRatio">${chip('', 'Auto', !state.editAspectRatio)}${c.aspectRatios.map(a => ratioChip(a, state.editAspectRatio === a)).join('')}</div></div>`;
+          } else {
+            html += `<div class="st-field"><span class="st-field-label">Aspect ratio</span><div class="st-chips st-chips-ratio" data-param="aspectRatio">${c.aspectRatios.map(a => ratioChip(a, state.aspectRatio === a)).join('')}</div></div>`;
+          }
+        }
         if (vm !== 'edit') {
           if (c.durations.length) {
             const d = c.durations;
@@ -503,12 +514,12 @@ export function createComposer(root, ctx) {
                 <input type="range" class="st-range" id="st-c-duration" min="0" max="${d.length - 1}" step="1" value="${idx}" aria-label="Duration in seconds"><div class="st-range-ends"><span>${d[0]}s</span><span>${d[d.length - 1]}s</span></div></div>`;
             }
           }
-          if (c.audio !== false) {
-            html += `<label class="st-switch-row"><span>Generate audio${c.audio === null ? ' <span class="st-hint">support unknown</span>' : ''}</span><span class="st-switch"><input type="checkbox" id="st-c-audio" ${state.generateAudio === true ? 'checked' : ''}><span class="st-switch-knob"></span></span></label>`;
+          if (c.audio === true) {
+            html += `<label class="st-switch-row"><span>Generate audio</span><span class="st-switch"><input type="checkbox" id="st-c-audio" ${state.generateAudio === true ? 'checked' : ''}><span class="st-switch-knob"></span></span></label>`;
           }
           if (!c.resolutions.length && !c.aspectRatios.length && !c.durations.length) html += `<div class="st-hint st-hint-block">OpenRouter publishes no parameter lists for this model; the provider picks defaults.</div>`;
         } else {
-          html += `<div class="st-hint st-hint-block">${c.editing ? 'Describe the change; the source video is sent to the model via S3 and the result is stored as a new clip.' : 'This model is not marked as a video-editing model. Pick one with the “edit” badge.'}</div>`;
+          html += `<div class="st-hint st-hint-block">${c.editing ? 'Describe the change; the source video is sent to the model via S3 and the result is stored as a new clip. Length and resolution follow the source.' : 'This model is not marked as a video-editing model. Pick one with the “edit” badge.'}</div>`;
         }
       }
     }
@@ -532,6 +543,7 @@ export function createComposer(root, ctx) {
           }
           state.size = v; ctx.savePrefs({ photoSize: v });
         } else if (param === 'duration') state.duration = Number(v);
+        else if (param === 'editAspectRatio') state.editAspectRatio = v || null;
         else state[param] = v;
         renderParams(); scheduleCost();
       });
@@ -985,7 +997,9 @@ export function createComposer(root, ctx) {
     state.prompt = snap.prompt || ''; promptEl.value = state.prompt; autoGrow(promptEl);
     state.negativePrompt = snap.negativePrompt || ''; negEl.value = state.negativePrompt;
     state.size = snap.size || ''; state.seed = snap.seed ?? ''; state.steps = snap.steps ?? '';
-    state.resolution = snap.resolution; state.aspectRatio = snap.aspectRatio; state.duration = snap.duration; state.generateAudio = snap.generateAudio;
+    state.resolution = snap.resolution; state.duration = snap.duration; state.generateAudio = snap.generateAudio;
+    if (snap.mode === 'video' && snap.videoMode === 'edit') state.editAspectRatio = snap.aspectRatio || null;
+    else state.aspectRatio = snap.aspectRatio;
     state.useRealContinuation = !!snap.useRealContinuation; state.concatenate = snap.concatenate !== false;
     state.references = (snap.references || []).slice(); state.characterIds = (snap.characterIds || []).slice();
     if (snap.mode === 'photo') state.photoModel = snap.model || state.photoModel; else state.videoModel = snap.model || state.videoModel;

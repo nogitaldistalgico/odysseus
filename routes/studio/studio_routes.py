@@ -1056,13 +1056,20 @@ async def generate_video(request: Request, req: VideoGenRequest):
         # the payload — only extend_video forwarded them — so a client's
         # duration / resolution / aspect ratio / audio choice was silently
         # dropped and the provider defaults were used instead.
-        if req.duration is not None:
+        #
+        # Forward only what the model publishes a list for. Clients carry
+        # values over from a previously selected model (a duration from Veo
+        # while Aleph is selected, say) and OpenRouter rejects parameters a
+        # model does not take; validate_payload_params only clamps against a
+        # non-empty list, so an unlisted parameter is dropped here — exactly
+        # what happened before these were forwarded at all.
+        if req.duration is not None and constraints.get("supported_durations"):
             payload["duration"] = req.duration
-        if req.resolution:
+        if req.resolution and constraints.get("supported_resolutions"):
             payload["resolution"] = req.resolution
-        if req.aspect_ratio:
+        if req.aspect_ratio and constraints.get("supported_aspect_ratios"):
             payload["aspect_ratio"] = req.aspect_ratio
-        if req.generate_audio is not None:
+        if req.generate_audio is not None and constraints.get("generate_audio"):
             payload["generate_audio"] = req.generate_audio
 
         # Validate / correct resolution, aspect_ratio, duration against
