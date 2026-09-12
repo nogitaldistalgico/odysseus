@@ -843,10 +843,10 @@ def setup_chat_routes(
             # Shared with the other injection point below and enriched with the
             # computed indicator digest, so the coach starts the conversation
             # already knowing the state instead of parsing 14 days of markdown.
-            from core.constants import DATA_DIR as _FIT_DATA_DIR
+            from core.constants import FITNESS_DATA_DIR as _FIT_DATA_DIR
             from services.fitness.coach import build_system_prompt
             _fit_ws = os.path.join(
-                _FIT_DATA_DIR, "users", effective_user(request) or "default", "fitness_data"
+                _FIT_DATA_DIR, effective_user(request) or "default", "fitness_data"
             )
             ctx.messages.insert(0, {
                 "role": "system",
@@ -1050,8 +1050,8 @@ def setup_chat_routes(
         
         # Override workspace for fitness coach
         if is_fitness_coach:
-            from core.constants import DATA_DIR
-            workspace = os.path.join(DATA_DIR, "users", effective_user(request) or "default", "fitness_data")
+            from core.constants import FITNESS_DATA_DIR
+            workspace = os.path.join(FITNESS_DATA_DIR, effective_user(request) or "default", "fitness_data")
             chat_mode = "agent"
             incognito = False
         # Plan mode is a modifier on agent mode — it only makes sense with tools.
@@ -1457,10 +1457,10 @@ def setup_chat_routes(
             # Shared with the other injection point below and enriched with the
             # computed indicator digest, so the coach starts the conversation
             # already knowing the state instead of parsing 14 days of markdown.
-            from core.constants import DATA_DIR as _FIT_DATA_DIR
+            from core.constants import FITNESS_DATA_DIR as _FIT_DATA_DIR
             from services.fitness.coach import build_system_prompt
             _fit_ws = os.path.join(
-                _FIT_DATA_DIR, "users", effective_user(request) or "default", "fitness_data"
+                _FIT_DATA_DIR, effective_user(request) or "default", "fitness_data"
             )
             ctx.messages.insert(0, {
                 "role": "system",

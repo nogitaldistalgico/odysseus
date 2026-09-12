@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from core.atomic_io import atomic_write_json, atomic_write_text
-from core.constants import DATA_DIR
+from core.constants import FITNESS_DATA_DIR
 from src.auth_helpers import effective_user
 from services.fitness.analytics import analyze, notable
 
@@ -97,7 +97,7 @@ def setup_fitness_routes() -> APIRouter:
         safe = os.path.basename(str(user).strip()) or "default"
         if safe in (".", ".."):
             safe = "default"
-        path = os.path.join(DATA_DIR, "users", safe, "fitness_data")
+        path = os.path.join(FITNESS_DATA_DIR, safe, "fitness_data")
         os.makedirs(path, exist_ok=True)
         return path
 

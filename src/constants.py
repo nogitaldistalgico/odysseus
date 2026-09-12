@@ -61,6 +61,11 @@ STUDIO_THUMBNAIL_DIR = os.path.join(STUDIO_MEDIA_DIR, "thumbnails")
 # Everything else under DATA_DIR is application state (session store, auth
 # database, encryption key, settings), and the agent has no business reading it.
 AGENT_WORKSPACE_DIR = os.path.join(DATA_DIR, "agent_workspace")
+# Per-user fitness coach files (<user>/fitness_data/*.md). The coach runs as an
+# agent whose workspace is bound here and whose prompt tells it to read and
+# write these files, so this is a second agent-readable carve-out of DATA_DIR
+# (src/tool_execution.py::_agent_readable_data_subdirs).
+FITNESS_DATA_DIR = os.path.join(DATA_DIR, "users")
 
 # Paths with an intentional dedicated env override, defaulting under DATA_DIR.
 MAIL_ATTACHMENTS_DIR = os.getenv("ODYSSEUS_MAIL_ATTACHMENTS_DIR", os.path.join(DATA_DIR, "mail-attachments"))

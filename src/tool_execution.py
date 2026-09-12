@@ -189,12 +189,16 @@ def _agent_readable_data_subdirs() -> tuple[str, ...]:
                             nests under it
       PERSONAL_UPLOADS_DIR  indexed as a personal-docs directory, which
                             manage_rag lists as an absolute path
+      FITNESS_DATA_DIR      the fitness coach binds <user>/fitness_data as
+                            its workspace and its prompt says to read and
+                            write the markdown files there (routes/chat_routes.py)
 
     Order matters: the first entry is roots[0], which _resolve_search_root uses
     when grep/glob/ls are called with no path.
     """
     from src.constants import (
         DATA_DIR,
+        FITNESS_DATA_DIR,
         MAIL_ATTACHMENTS_DIR,
         PERSONAL_DIR,
         PERSONAL_UPLOADS_DIR,
@@ -208,6 +212,7 @@ def _agent_readable_data_subdirs() -> tuple[str, ...]:
         (MAIL_ATTACHMENTS_DIR, "mail-attachments", True),
         (PERSONAL_DIR, "personal_docs", False),
         (PERSONAL_UPLOADS_DIR, "personal_uploads", False),
+        (FITNESS_DATA_DIR, "users", False),
     )
     configured_data_dir = os.path.abspath(os.path.expanduser(str(DATA_DIR)))
     data_dir = os.path.realpath(configured_data_dir)
