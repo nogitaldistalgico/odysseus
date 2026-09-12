@@ -4,7 +4,7 @@ import os
 
 from src.runtime_paths import get_app_root, get_default_data_dir
 
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 
 # Base paths
 BASE_DIR = os.path.join(get_app_root(), "")
@@ -56,6 +56,11 @@ MEMORY_VECTORS_DIR = os.path.join(DATA_DIR, "memory_vectors")
 STUDIO_MEDIA_DIR = os.path.join(DATA_DIR, "studio_media")
 STUDIO_CHARACTERS_DIR = os.path.join(DATA_DIR, "studio_characters")
 STUDIO_THUMBNAIL_DIR = os.path.join(STUDIO_MEDIA_DIR, "thumbnails")
+
+# The only part of DATA_DIR the agent's file tools and subprocesses may touch.
+# Everything else under DATA_DIR is application state (session store, auth
+# database, encryption key, settings), and the agent has no business reading it.
+AGENT_WORKSPACE_DIR = os.path.join(DATA_DIR, "agent_workspace")
 
 # Paths with an intentional dedicated env override, defaulting under DATA_DIR.
 MAIL_ATTACHMENTS_DIR = os.getenv("ODYSSEUS_MAIL_ATTACHMENTS_DIR", os.path.join(DATA_DIR, "mail-attachments"))
