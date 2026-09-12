@@ -182,6 +182,40 @@ async def _tool_approval_resolution_stream(decision: str) -> AsyncGenerator[str,
     yield "data: [DONE]\n\n"
 
 
+_PLAN_CONFIRMATION_RE = re.compile(
+    r"^\s*(?:yes|y|yeah|yep|ok|okay|sure|do it|go ahead|continue|carry on|"
+    r"run it|launch it|start it|ja|mach das|bestätigt|los|ausführen|machen)"
+    r"\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+_PLAN_CHECKLIST_LINE_RE = re.compile(r"^\s*(?:[-*]|\d+\.)\s+\[[ x-]\]\s+", re.IGNORECASE)
+
+
+def _approved_plan_from_confirmation(message: Any, sess: Any) -> str:
+    """Recover the plan a bare "yes"/"ja" refers to, for clients without a plan UI.
+
+    The WebUI sends the approved checklist back as approved_plan on every
+    turn. The iOS client only sends the confirmation text, so read the
+    checklist off the last assistant turn instead. Capped like the explicit
+    field. Empty when the message is not a confirmation or no checklist is
+    found.
+    """
+    if not isinstance(message, str) or not _PLAN_CONFIRMATION_RE.match(message):
+        return ""
+    last_assistant = None
+    for item in reversed(getattr(sess, "history", None) or []):
+        if getattr(item, "role", None) == "assistant":
+            last_assistant = getattr(item, "content", None)
+            break
+    if not isinstance(last_assistant, str) or "- [" not in last_assistant:
+        return ""
+    lines = last_assistant.split("\n")
+    for index, line in enumerate(lines):
+        if _PLAN_CHECKLIST_LINE_RE.match(line):
+            return "\n".join(lines[index:]).strip()[:8192]
+    return ""
+
+
 def _chat_candidate_request_factory(
     messages,
     fallback_context_length: int = 0,
@@ -1069,23 +1103,6 @@ def setup_chat_routes(
         approved_plan = ""
         if not plan_mode:
             approved_plan = (form_data.get("approved_plan") or "").strip()[:8192]
-            # Fallback for iOS / API clients that don't send approved_plan explicitly
-            # but are confirming a plan proposed in the previous turn.
-            if not approved_plan and isinstance(message, str):
-                import re
-                _msg_l = message.strip().lower()
-                if re.search(r"^\s*(?:yes|y|yeah|yep|ok|okay|sure|do it|go ahead|continue|carry on|run it|launch it|start it|ja|mach das|bestätigt|los|ausführen|machen)\s*[.!?]*\s*$", _msg_l, re.IGNORECASE):
-                    _last_assistant = None
-                    for _m in reversed(session.messages):
-                        if _m.role == "assistant":
-                            _last_assistant = _m.content
-                            break
-                    if _last_assistant and "- [" in _last_assistant:
-                        lines = _last_assistant.split("\n")
-                        for i, line in enumerate(lines):
-                            if re.match(r"^\s*(?:[-*]|\d+\.)\s+\[[ x-]\]\s+", line, re.IGNORECASE):
-                                approved_plan = "\n".join(lines[i:]).strip()[:8192]
-                                break
         # Did the USER explicitly pick agent mode? (vs. us auto-escalating
         # below). Skill extraction should only learn from real agent sessions,
         # not chats we quietly promoted for a notes/calendar intent.
@@ -1217,6 +1234,12 @@ def setup_chat_routes(
             _verify_session_owner(request, session)
             sess = session_manager.get_session(session)
             owner = effective_user(request)
+            # Fallback for iOS / API clients that don't send approved_plan
+            # explicitly but are confirming a plan proposed in the previous
+            # turn. Runs here, after coerce (a JSON body's message is resolved
+            # only then) and with the loaded session rather than its id.
+            if not plan_mode and not approved_plan and not tool_approval_id:
+                approved_plan = _approved_plan_from_confirmation(message, sess)
             if tool_approval_id:
                 _reject_delegated_tool_approval(request)
                 pending_tool_approval = tool_approval_store.peek(tool_approval_id)
