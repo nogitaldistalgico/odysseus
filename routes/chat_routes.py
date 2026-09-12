@@ -43,7 +43,7 @@ from core.exceptions import SessionNotFoundError
 from src.auth_helpers import (
     effective_user,
     get_current_user,
-    is_delegated_credential,
+    is_delegated_agent_credential,
     require_api_token_scope,
     require_chat_api_token_scope,
 )
@@ -105,8 +105,12 @@ def _reject_delegated_tool_approval(request: Request) -> None:
     answers the prompt it triggered, nobody is asked and the gate collapses
     into an extra round trip. Owner and session already match here: the token
     is answering on behalf of the account that minted it.
+
+    A token with the agent:privileged scope is the exception: the owner set it
+    on an interactive client of their own, where a person sees the approval
+    card and taps the answer (src/auth_helpers.py).
     """
-    if is_delegated_credential(request):
+    if is_delegated_agent_credential(request):
         raise HTTPException(
             403,
             "Tool approvals require an interactive session. "
@@ -1561,9 +1565,10 @@ def setup_chat_routes(
         # Build disabled-tools set from frontend toggles + user privileges
         disabled_tools = set()
         # Minting is admin-only, so every owner-keyed check below answers
-        # "admin" for a token. Cap it at the non-admin policy instead.
-        # stream_agent_loop repeats this from delegated_credential.
-        _delegated_credential = is_delegated_credential(request)
+        # "admin" for a token. Cap it at the non-admin policy instead, unless
+        # the token carries agent:privileged (an interactive client of the
+        # owner). stream_agent_loop repeats this from delegated_credential.
+        _delegated_credential = is_delegated_agent_credential(request)
         if _delegated_credential:
             disabled_tools.update(delegated_credential_blocked_tools())
         # Only disable bash when the caller *explicitly* set it to a falsy

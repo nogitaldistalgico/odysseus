@@ -57,6 +57,30 @@ def is_delegated_credential(request: Request) -> bool:
     return _is_api_token_request(request)
 
 
+# A token scope the owner sets deliberately on a client of their own (the iOS
+# app): a person reads the transcript there and answers the approval prompts,
+# so the run may carry the owner's agent tool set. Named in
+# routes/api_token_routes.py::ALLOWED_SCOPES and the admin token panel.
+AGENT_PRIVILEGED_SCOPE = "agent:privileged"
+
+
+def is_delegated_agent_credential(request: Request) -> bool:
+    """Whether the AGENT run behind this request must be capped as delegated.
+
+    :func:`is_delegated_credential` is the general answer and stays true for
+    every bearer token. This narrower question is what the agent's tool
+    authority and the tool-approval gate ask, and it is answered "no" for a
+    token carrying :data:`AGENT_PRIVILEGED_SCOPE`: the owner has declared that
+    an interactive client of their own holds it, so a person is present to
+    approve a gated action. Everything else about the token (ownership,
+    session endpoint options, scope checks) still treats it as delegated.
+    """
+    if not _is_api_token_request(request):
+        return False
+    scopes = set(getattr(request.state, "api_token_scopes", []) or [])
+    return AGENT_PRIVILEGED_SCOPE not in scopes
+
+
 def require_api_token_scope(request: Request, scope: str) -> Optional[str]:
     """Require ``scope`` when the request is authenticated by an API token.
 

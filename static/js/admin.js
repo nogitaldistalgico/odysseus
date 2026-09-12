@@ -2533,6 +2533,9 @@ const _TOKEN_SCOPES = [
   { key: 'memory:write',      label: 'Memory write',      detail: 'Write memory when enabled' },
   { key: 'cookbook:read',     label: 'Cookbook read',     detail: 'List cookbook tasks + tail their tmux output' },
   { key: 'cookbook:launch',   label: 'Cookbook launch',   detail: 'Launch and stop cookbook serve tasks' },
+  // Deliberately absent from the Codex/Claude integration form in settings.js:
+  // those tokens are exactly the delegated integrations this scope must not reach.
+  { key: 'agent:privileged',  label: 'Agent privileged',  detail: 'Interactive client of your own (iOS app): the agent keeps your full tool set and the client may answer tool approvals. Never give this to an integration' },
 ];
 
 function _renderTokenScopeRows(t) {

@@ -27,6 +27,10 @@ ALLOWED_SCOPES = {
     "memory:write",
     "cookbook:read",
     "cookbook:launch",
+    # Interactive client of the owner (iOS app): the agent keeps the owner's
+    # full tool set and the client may answer tool approvals. Not for
+    # integrations; see src/auth_helpers.py::is_delegated_agent_credential.
+    "agent:privileged",
 }
 TOKEN_PROFILES = {
     "chat": ["chat"],
@@ -68,6 +72,8 @@ def _normalize_scopes(scopes: str | list[str] | None = None, profile: str | None
     ensure_before("calendar:write", "calendar:read")
     ensure_before("memory:write", "memory:read")
     ensure_before("email:draft", "email:read")
+    # The agent runs behind the chat routes, which require the chat scope.
+    ensure_before("agent:privileged", "chat")
     ensure_before("cookbook:launch", "cookbook:read")
 
     return normalized or [DEFAULT_SCOPES]
