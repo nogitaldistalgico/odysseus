@@ -531,6 +531,12 @@ export async function openStudio(opts = {}) {
     }
   }
   if (_open) {
+    // Believed open but not on screen (something hid the element behind our
+    // back): show it again instead of leaving the user with a dead button.
+    if (modal.classList.contains('hidden') && !Modals.isMinimized(MODAL_ID)) {
+      modal.classList.remove('hidden', 'modal-minimized');
+      modal.style.display = '';
+    }
     if (opts.tab) showTab(opts.tab);
     return;
   }
@@ -568,15 +574,13 @@ function _doClose() {
   _open = false;
   const modal = document.getElementById(MODAL_ID);
   if (modal) {
-    const content = modal.querySelector('.st-window');
-    if (content) {
-      content.classList.add('modal-closing');
-      const done = () => { modal.classList.add('hidden'); content.classList.remove('modal-closing'); };
-      content.addEventListener('animationend', done, { once: true });
-      setTimeout(done, 260);
-    } else {
-      modal.classList.add('hidden');
-    }
+    // No exit animation: modalManager.close() hides the element synchronously
+    // right after this callback, so the animation never ran — but an armed
+    // `animationend` listener survived and fired on the NEXT open's enter
+    // animation, hiding the freshly opened window (it looked like the Studio
+    // vanished on open and only a page reload brought it back).
+    modal.classList.add('hidden');
+    modal.querySelector('.st-window')?.classList.remove('modal-closing');
     if (modal.classList.contains('st-fullscreen')) toggleFullscreen(false);
   }
   _panes.library?.closeDetail?.();

@@ -926,6 +926,17 @@
 }
 .st-scope .st-tile:hover { transform: translateY(-2px); box-shadow: var(--st-shadow); }
 .st-tile img, .st-tile video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.st-tile-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--st-faint);
+  background:
+    radial-gradient(120% 90% at 50% 110%, color-mix(in srgb, var(--st-accent) 14%, transparent), transparent 60%),
+    var(--st-surface-sunken);
+}
 .st-tile-badges { position: absolute; left: 6px; bottom: 6px; display: flex; gap: 4px; }
 .st-tile-badge {
   display: inline-flex;
@@ -1031,6 +1042,21 @@
   box-shadow: var(--st-shadow);
 }
 .st-detail-state { display: flex; flex-direction: column; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; color: var(--st-muted); text-align: center; max-width: 420px; }
+.st-detail-frame { position: relative; }
+.st-detail-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--st-muted);
+  pointer-events: none;
+}
+.st-detail-loading svg { color: var(--st-danger); }
 .st-detail-failed { color: var(--st-danger); }
 .st-scope .st-detail-close { position: absolute; top: 12px; left: 12px; width: 32px; height: 32px; border-radius: 50%; background: var(--st-surface-raised); border-color: var(--st-line); box-shadow: var(--st-shadow-sm); }
 .st-scope .st-detail-nav {

@@ -584,7 +584,7 @@ export function createComposer(root, ctx) {
       const poster = api.posterUrl(s);
       const meta = [s.width && s.height ? `${s.width}×${s.height}` : '', formatDuration(s.duration), generationModeLabel(s.generation_mode)].filter(Boolean).join(' · ');
       box.innerHTML = `<div class="st-source">
-        <div class="st-source-thumb">${poster ? `<img src="${esc(poster)}" alt="">` : `<video src="${esc(api.mediaUrl(s))}" muted playsinline preload="metadata"></video>`}</div>
+        <div class="st-source-thumb">${poster ? `<img src="${esc(poster)}" alt="">` : `<div class="st-tile-placeholder">${ICONS.film}</div>`}</div>
         <div class="st-source-info"><div class="st-source-title">${esc(s.prompt || s.filename || s.id)}</div><div class="st-source-meta">${esc(meta)}</div></div>
         <button type="button" class="st-btn st-btn-ghost st-btn-sm" id="st-c-source-pick">Change</button>
       </div>`;

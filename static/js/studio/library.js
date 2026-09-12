@@ -37,6 +37,10 @@ export function createLibrary(root, ctx) {
   const state = { type: 'all', favorites: false, status: 'all', detailId: null, uploading: null };
   let detailUnregister = null;
   let observer = null;
+  // The detail overlay lives in the window's overlay host, OUTSIDE this pane's
+  // root — `q()` cannot see it, so it is held here. (Querying it through the
+  // root left an empty backdrop on screen that never rendered and never closed.)
+  let detailEl = null;
 
   root.innerHTML = `
     <div class="st-library">
@@ -102,8 +106,11 @@ export function createLibrary(root, ctx) {
     if (pending) media = `<div class="st-tile-pending"><span class="st-tile-spinner"></span></div>`;
     else if (failed) media = `<div class="st-tile-failed">${ICONS.warn}<span>Failed</span></div>`;
     else if (isVideo) {
+      // No <video> in tiles: each one fetched metadata (and, for MP4s with a
+      // trailing moov atom, most of the file) over the browser's few
+      // connections per host, starving the detail view. Poster or placeholder.
       const poster = api.posterUrl(m);
-      media = poster ? `<img src="${esc(poster)}" alt="" loading="lazy">` : `<video src="${esc(api.mediaUrl(m))}#t=0.5" muted playsinline preload="metadata"></video>`;
+      media = poster ? `<img src="${esc(poster)}" alt="" loading="lazy">` : `<div class="st-tile-placeholder">${ICONS.film}</div>`;
     } else media = `<img src="${esc(api.mediaUrl(m))}" alt="" loading="lazy">`;
     const badges = [];
     if (isVideo && !pending && !failed) badges.push(`<span class="st-tile-badge">${ICONS.play}${esc(formatDuration(m.duration) || 'video')}</span>`);
@@ -125,7 +132,7 @@ export function createLibrary(root, ctx) {
     const list = filtered();
     const pending = lib.items.filter(m => m.job_status === 'pending').length;
     const failed = lib.items.filter(m => m.job_status === 'failed').length;
-    // Rebuilding the grid restarts <video> tiles and drops scroll position; skip no-op renders.
+    // Rebuilding the grid drops scroll position and refetches posters; skip no-op renders.
     const sig = JSON.stringify([state.type, state.favorites, state.status, lib.loaded, lib.loading, lib.exhausted, lib.total, pending, failed,
       list.map(m => [m.id, m.job_status, m.favorite, m.thumbnail_url, m.generation_mode, m.duration])]);
     if (!force && sig === gridSignature) return;
@@ -211,27 +218,27 @@ export function createLibrary(root, ctx) {
     const m = ctx.getMedia(id);
     if (!m) { ctx.toast('Item not found'); return; }
     state.detailId = id;
-    let el = q('#st-l-detail');
-    if (!el) {
-      el = document.createElement('div');
-      el.id = 'st-l-detail';
-      el.className = 'st-detail';
-      el.setAttribute('role', 'dialog');
-      el.setAttribute('aria-label', 'Media details');
-      el.tabIndex = -1; // focusable so ←/→ work right after opening
-      ctx.overlayHost().appendChild(el);
+    if (!detailEl) {
+      const host = ctx.overlayHost();
+      if (!host) return;
+      detailEl = document.createElement('div');
+      detailEl.id = 'st-l-detail';
+      detailEl.className = 'st-detail';
+      detailEl.setAttribute('role', 'dialog');
+      detailEl.setAttribute('aria-label', 'Media details');
+      detailEl.tabIndex = -1; // focusable so ←/→ work right after opening
+      host.appendChild(detailEl);
       detailUnregister = ctx.registerMenuDismiss(() => closeDetail());
-      el.addEventListener('keydown', onDetailKey);
+      detailEl.addEventListener('keydown', onDetailKey);
     }
     renderDetail(true);
-    el.focus({ preventScroll: true });
+    detailEl.focus({ preventScroll: true });
   }
 
   function closeDetail() {
-    const el = q('#st-l-detail');
     detailSignature = '';
     if (detailUnregister) { detailUnregister(); detailUnregister = null; }
-    if (el) { el.querySelector('video')?.pause?.(); el.remove(); }
+    if (detailEl) { detailEl.querySelector('video')?.pause?.(); detailEl.remove(); detailEl = null; }
     state.detailId = null;
   }
 
@@ -251,7 +258,7 @@ export function createLibrary(root, ctx) {
 
   let detailSignature = '';
   function renderDetail(force = false) {
-    const el = q('#st-l-detail');
+    const el = detailEl;
     const m = ctx.getMedia(state.detailId);
     if (!el || !m) { closeDetail(); return; }
     const list = filtered();
@@ -266,7 +273,7 @@ export function createLibrary(root, ctx) {
     let media;
     if (pending) media = `<div class="st-detail-state"><span class="st-tile-spinner st-tile-spinner-lg"></span><div>Rendering…</div><div class="st-hint">${esc(m.model || '')}</div></div>`;
     else if (failed) media = `<div class="st-detail-state st-detail-failed">${ICONS.warn}<div>Generation failed</div><div class="st-hint">${esc(m.error || '')}</div></div>`;
-    else if (isVideo) media = `<video src="${esc(api.mediaUrl(m))}" ${api.posterUrl(m) ? `poster="${esc(api.posterUrl(m))}"` : ''} controls autoplay playsinline preload="metadata"></video>`;
+    else if (isVideo) media = `<video src="${esc(api.mediaUrl(m))}" ${api.posterUrl(m) ? `poster="${esc(api.posterUrl(m))}"` : ''} controls autoplay playsinline preload="auto"></video><div class="st-detail-loading"><span class="st-tile-spinner st-tile-spinner-lg"></span><span>Loading video…</span></div>`;
     else media = `<img src="${esc(api.mediaUrl(m))}" alt="${esc(m.prompt || '')}">`;
 
     const rows = [
@@ -311,6 +318,17 @@ export function createLibrary(root, ctx) {
         </div>
       </aside>`;
 
+    const video = el.querySelector('video');
+    if (video) {
+      const loading = el.querySelector('.st-detail-loading');
+      const ready = () => loading?.remove();
+      video.addEventListener('loadeddata', ready, { once: true });
+      video.addEventListener('playing', ready, { once: true });
+      video.addEventListener('error', () => {
+        if (loading) loading.innerHTML = `${ICONS.warn}<span>The video could not be loaded.</span>`;
+      }, { once: true });
+      if (video.readyState >= 2) ready();
+    }
     el.querySelector('.st-detail-close').addEventListener('click', closeDetail);
     el.querySelector('.st-detail-prev').addEventListener('click', () => step(-1));
     el.querySelector('.st-detail-next').addEventListener('click', () => step(1));
@@ -320,12 +338,13 @@ export function createLibrary(root, ctx) {
     let saveTimer = null;
     promptEl.addEventListener('input', () => {
       clearTimeout(saveTimer);
-      q('#st-d-saved').textContent = 'saving…';
+      const saved = el.querySelector('#st-d-saved');
+      if (saved) saved.textContent = 'saving…';
       saveTimer = setTimeout(async () => {
         try {
           const upd = await api.patchMedia(m.id, { prompt: promptEl.value });
           ctx.upsertLibrary(upd);
-          const s = q('#st-d-saved'); if (s) { s.textContent = 'saved'; setTimeout(() => { if (s.textContent === 'saved') s.textContent = ''; }, 1500); }
+          if (saved) { saved.textContent = 'saved'; setTimeout(() => { if (saved.textContent === 'saved') saved.textContent = ''; }, 1500); }
         } catch (err) { ctx.reportError(err, 'Could not save the prompt'); }
       }, 600);
     });

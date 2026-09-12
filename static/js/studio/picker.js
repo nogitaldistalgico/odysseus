@@ -16,6 +16,7 @@ import { formatDuration, relTime } from './payload.js';
 
 const CLOSE_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>';
 const CHECK_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+const FILM_ICON = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/></svg>';
 
 let _current = null;
 
@@ -97,7 +98,7 @@ export function openMediaPicker(ctx, opts) {
       caption = m.prompt || m.caption || '';
     } else if (m.media_type === 'video') {
       const poster = api.posterUrl(m);
-      media = poster ? `<img src="${esc(poster)}" alt="" loading="lazy">` : `<video src="${esc(api.mediaUrl(m))}" muted playsinline preload="metadata"></video>`;
+      media = poster ? `<img src="${esc(poster)}" alt="" loading="lazy">` : `<div class="st-tile-placeholder">${FILM_ICON}</div>`;
       caption = [formatDuration(m.duration), relTime(m.created_at)].filter(Boolean).join(' · ');
     } else {
       media = `<img src="${esc(api.mediaUrl(m))}" alt="" loading="lazy">`;
