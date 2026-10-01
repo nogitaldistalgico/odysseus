@@ -23,6 +23,7 @@ import cookbookModule from './cookbook.js';
 import { EVAL_PROMPTS } from './compare/index.js';
 import { PROVIDER_DEVICE_FLOWS, formatDeviceFlowError, runProviderDeviceFlow } from './providerDeviceFlow.js';
 import { getSettings } from './appConfig.js';
+import { isPassthroughModel } from './passthrough.js';
 
 // ── Module state ──────────────────────────────────────────────────────
 
@@ -6272,6 +6273,18 @@ function _fuzzyMatch(typed, maxDist) {
 
 function _isCmd(str) { return str.startsWith('/') || str.startsWith('!'); }
 
+/** True when the current chat's model is relayed as-is (src/passthrough.py). */
+export async function isPassthroughChat() {
+  try {
+    const model = sessionModule.getCurrentModel ? sessionModule.getCurrentModel() : '';
+    if (!model) return false;
+    const settings = await getSettings();
+    return isPassthroughModel(model, settings && settings.passthrough_model_patterns);
+  } catch (_) {
+    return false;
+  }
+}
+
 // ── Main dispatcher ───────────────────────────────────────────────
 
 async function handleSlashCommand(input) {
@@ -6390,7 +6403,8 @@ async function handleSlashCommand(input) {
     } catch (_) { /* fall through to fuzzy match */ }
 
     // --- 5. Fuzzy match for typos ---
-    const suggestions = _fuzzyMatch(rawCmd);
+    // Passthrough chats send unknown commands (e.g. /schnell) to the model.
+    const suggestions = (await isPassthroughChat()) ? [] : _fuzzyMatch(rawCmd);
     if (suggestions.length) {
       _showUser();
       slashReply(`Unknown command "/${ctx.esc(rawCmd)}". Did you mean: ${suggestions.map(s => '<b>/'+s+'</b>').join(', ')}?`);

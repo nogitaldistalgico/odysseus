@@ -2,7 +2,7 @@
 // Lightweight popup that surfaces the existing /command registry as users
 // type. Reads COMMANDS from slashCommands.js — no command logic lives here.
 
-import { COMMANDS, LEGACY_ALIASES } from './slashCommands.js';
+import { COMMANDS, LEGACY_ALIASES, isPassthroughChat } from './slashCommands.js';
 
 const POPUP_ID = 'slash-autocomplete';
 const MAX_VISIBLE = 14;
@@ -115,6 +115,12 @@ function _scoreMatch(entry, query) {
   return 0;
 }
 
+// True when `entry` (or one of its aliases) extends what the user typed.
+function _completesTyped(entry, typed) {
+  const q = typed.toLowerCase();
+  return [entry.token, ...entry.aliases].some(t => t.toLowerCase().startsWith(q));
+}
+
 function _exactCommandGroupItems(all, query) {
   const q = query.toLowerCase();
   if (!/^\/[a-z0-9_-]+$/i.test(q)) return [];
@@ -211,6 +217,10 @@ export function initSlashAutocomplete(textarea) {
     _position(popup, textarea);
   };
 
+  // Passthrough chats (src/passthrough.py) send unknown commands to the model,
+  // so Enter must not swap e.g. "/gemini" for a help-text match.
+  let passthroughChat = false;
+
   const refresh = () => {
     const v = textarea.value;
     // Only trigger when the message starts with "/" (no leading space) and
@@ -218,6 +228,7 @@ export function initSlashAutocomplete(textarea) {
     // If the user has moved past the slash command (newline, longer prose),
     // the menu hides — we don't autocomplete mid-sentence.
     if (!v.startsWith('/') || v.includes('\n')) { hide(); return; }
+    isPassthroughChat().then(on => { passthroughChat = on; }, () => {});
     const query = v.trim();
     const groupItems = _exactCommandGroupItems(all, query);
     if (groupItems.length) {
@@ -284,6 +295,11 @@ export function initSlashAutocomplete(textarea) {
       const exactHit = items.find(it => it.token === v || it.aliases.includes(v));
       if (e.key === 'Enter' && exactHit) {
         // User typed the whole command — let the normal submit path handle it
+        hide();
+        return;
+      }
+      if (e.key === 'Enter' && passthroughChat && !_completesTyped(items[selectedIdx], v)) {
+        // Not a completion of what was typed — submit it as typed
         hide();
         return;
       }
