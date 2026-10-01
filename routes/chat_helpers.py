@@ -19,6 +19,7 @@ from src.model_context import estimate_tokens, get_context_length
 from src.auth_helpers import effective_user
 from src.prompt_security import untrusted_context_message
 from src.attachment_refs import attachment_ref
+from src.passthrough import is_passthrough_model
 from routes.prefs_routes import _load_for_user as load_prefs_for_user
 
 from fastapi import HTTPException
@@ -734,10 +735,18 @@ async def build_chat_context(
     )
     if use_rag is not None or is_research_spinoff or casual_low_signal:
         _preface_kwargs["use_rag"] = use_rag_val
-    preface, rag_sources, web_sources = chat_processor.build_context_preface(**_preface_kwargs)
+    # Passthrough models bring their own prompt, memory and tools: no preface,
+    # prefetched results or transcripts from Odysseus (src/passthrough.py).
+    passthrough = is_passthrough_model(sess.model)
+    if passthrough:
+        preface, rag_sources, web_sources = [], [], []
+        search_context = None
+        preprocessed.youtube_transcripts = []
+    else:
+        preface, rag_sources, web_sources = chat_processor.build_context_preface(**_preface_kwargs)
 
     # Capture used memories immediately
-    used_memories = getattr(chat_processor, '_last_used_memories', [])
+    used_memories = [] if passthrough else getattr(chat_processor, '_last_used_memories', [])
 
     # Inject pre-fetched search context (compare mode)
     if search_context and allow_tool_preprocessing and not casual_low_signal:
@@ -771,7 +780,7 @@ async def build_chat_context(
     # Placing it at the tail also keeps it out of the stable
     # preface+history prefix, so that prefix stays byte-identical turn over
     # turn (modulo the genuinely new history entries) and the cache survives.
-    if not agent_mode:
+    if not agent_mode and not passthrough:
         try:
             from src.user_time import current_datetime_context_message
             _dt_msg = current_datetime_context_message()
@@ -1192,6 +1201,9 @@ def run_post_response_tasks(
     # Memory extraction — only every 4th message pair to avoid excess LLM calls
     _msg_count = len(sess.history) if hasattr(sess, 'history') else 0
     _should_extract = (_msg_count >= 4) and (_msg_count % 4 == 0)
+    # Passthrough chats never fill Odysseus memory (src/passthrough.py).
+    if is_passthrough_model(getattr(sess, "model", None)):
+        _should_extract = False
     if allow_background_extraction and not incognito and not compare_mode and _should_extract and uprefs.get("auto_memory", True):
         from services.memory.memory_extractor import extract_and_store
         from src.task_endpoint import resolve_task_endpoint

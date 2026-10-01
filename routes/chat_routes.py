@@ -67,6 +67,7 @@ from routes.chat_helpers import (
 )
 from src.action_intents import ToolIntent, classify_tool_intent as _classify_tool_intent
 from src.image_model_ids import looks_like_image_generation_model
+from src.passthrough import is_passthrough_model
 from src.tool_policy import (
     WEB_TOOL_NAMES,
     build_effective_tool_policy,
@@ -1379,6 +1380,12 @@ def setup_chat_routes(
             raise HTTPException(404, str(e))
         except (ValueError, ValidationError):
             raise HTTPException(400, "Invalid request parameters")
+
+        # Passthrough models (src/passthrough.py) always take the plain chat
+        # path: no agent mode and no automatic escalation into it.
+        if is_passthrough_model(sess.model):
+            chat_mode = "chat"
+            auto_escalated = False
 
         # ------------------------------------------------------------------ #
         # Privilege gates that must fire BEFORE any LLM work / token spend.

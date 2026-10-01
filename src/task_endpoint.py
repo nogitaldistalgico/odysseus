@@ -6,6 +6,7 @@ from src.endpoint_resolver import (
 )
 from src.llm_core import llm_call_async_with_fallback
 from src.interactive_gate import wait_for_interactive_quiet
+from src.passthrough import is_passthrough_model
 
 
 def resolve_task_endpoint(fallback_url=None, fallback_model=None, fallback_headers=None, owner=None):
@@ -14,8 +15,18 @@ def resolve_task_endpoint(fallback_url=None, fallback_model=None, fallback_heade
     Reads task_endpoint_id / task_model from admin settings.
     Falls back to the provided values when the setting is empty or the
     endpoint cannot be resolved.
+
+    Never returns a passthrough model (src/passthrough.py): it falls back to
+    the Default model, and to (None, None, None) — task skipped — when that
+    is a passthrough model too.
     """
-    return resolve_endpoint("task", fallback_url, fallback_model, fallback_headers, owner=owner)
+    resolved = resolve_endpoint("task", fallback_url, fallback_model, fallback_headers, owner=owner)
+    if not is_passthrough_model(resolved[1]):
+        return resolved
+    resolved = resolve_endpoint("default", owner=owner)
+    if not is_passthrough_model(resolved[1]):
+        return resolved
+    return None, None, None
 
 
 def resolve_task_candidates(
@@ -35,7 +46,7 @@ def resolve_task_candidates(
     candidates = []
 
     def _append(url, model, headers):
-        if not url or not model:
+        if not url or not model or is_passthrough_model(model):
             return
         key = (url, model)
         if any((u, m) == key for u, m, _ in candidates):

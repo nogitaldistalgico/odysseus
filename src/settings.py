@@ -141,6 +141,11 @@ DEFAULT_SETTINGS = {
     "task_model": "",
     "default_endpoint_id": "",
     "default_model": "",
+    # Chats whose model matches one of these glob patterns are relayed in
+    # passthrough mode: user/assistant turns only, no Odysseus context, no
+    # agent mode, no background tasks on that model (src/passthrough.py).
+    # An empty list turns the mode off.
+    "passthrough_model_patterns": ["absoluter-agent*"],
     # Optional prose style used only for normal document writing/editing.
     # Email replies use email_writing_style instead because greetings,
     # signatures, and mailbox identity rules are medium-specific.
