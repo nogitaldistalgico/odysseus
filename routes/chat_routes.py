@@ -877,7 +877,7 @@ def setup_chat_routes(
             defer_context_shaping=foreground_policy.enabled,
         )
 
-        is_fitness_coach = str(form_data.get("is_fitness_coach") or (body or {}).get("is_fitness_coach") or "").lower() == "true"
+        is_fitness_coach = bool(chat_request.is_fitness_coach)
         if is_fitness_coach:
             # Shared with the other injection point below and enriched with the
             # computed indicator digest, so the coach starts the conversation
