@@ -392,7 +392,9 @@ class StudioMedia(TimestampMixin, Base):
     media_type = Column(String, nullable=False, default="photo")  # "photo" or "video"
     prompt     = Column(Text, nullable=False, default="")
     model      = Column(String, nullable=True)
-    owner      = Column(String, nullable=True, index=True)
+    # Indexed by Index('ix_studio_media_owner') below; index=True here too
+    # would emit a second CREATE INDEX of the same name on a fresh database.
+    owner      = Column(String, nullable=True)
     is_active  = Column(Boolean, default=True)
     favorite   = Column(Boolean, default=False)
     
