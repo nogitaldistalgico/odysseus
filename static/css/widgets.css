@@ -1,0 +1,121 @@
+/* Interactive chat widgets (static/js/widgets.js).
+   A hydrated .ody-widget shows its sandboxed iframe; the original code block
+   stays in the DOM as the source view and as the fallback everywhere else. */
+
+.ody-widget {
+  position: relative;
+  margin: 12px 0;
+}
+
+/* In the chat, a block waiting to mount (widgets.js settles first) shows the
+   streaming placeholder look instead of its raw HTML. */
+#chat-history .ody-widget:not([data-widget-state]) > pre { display: none; }
+#chat-history .ody-widget:not([data-widget-state])::before {
+  content: 'Loading interactive widget…';
+  display: block;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  color: color-mix(in srgb, var(--fg) 70%, transparent);
+  font-size: 13px;
+}
+
+.ody-widget.is-live > pre { display: none; }
+.ody-widget.is-live.show-source > pre { display: block; }
+.ody-widget.is-live.show-source > .ody-widget-stage { display: none; }
+
+/* Seamless: the widget draws straight onto the bubble; its own .card (from
+   the widget base styles) provides any framing. */
+.ody-widget-stage {
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.ody-widget-iframe {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color-scheme: normal;
+  opacity: 0;
+  transition: height .2s ease-out, opacity .25s ease-out;
+}
+.ody-widget.is-ready .ody-widget-iframe { opacity: 1; }
+
+.ody-widget-toolbar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity .15s;
+}
+.ody-widget:hover .ody-widget-toolbar,
+.ody-widget:focus-within .ody-widget-toolbar,
+.ody-widget.show-source .ody-widget-toolbar { opacity: 1; }
+/* The code block's own copy/edit buttons sit top-right too. */
+.ody-widget.show-source .ody-widget-toolbar { top: auto; bottom: 8px; }
+
+.ody-widget-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  opacity: .75;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: opacity .15s, border-color .15s;
+}
+.ody-widget-btn:hover,
+.ody-widget-btn[aria-pressed="true"] { opacity: 1; border-color: var(--red); }
+
+.ody-widget-error {
+  display: none;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--color-error, #ff4444);
+}
+.ody-widget.has-error .ody-widget-error { display: block; }
+
+/* Shown by streamingRenderer.js while a widget fence is still streaming. */
+.ody-widget-pending {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 14px;
+  background:
+    linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--fg) 7%, transparent) 50%, transparent 70%)
+      0 0 / 250% 100%,
+    color-mix(in srgb, var(--panel) 55%, transparent);
+  animation: ody-widget-shimmer 1.6s linear infinite;
+  font-size: 13px;
+}
+.ody-widget-pending-label { color: var(--fg); }
+.ody-widget-pending-label::after { content: '…'; }
+.ody-widget-pending-lines {
+  margin-left: auto;
+  color: color-mix(in srgb, var(--fg) 55%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+@keyframes ody-widget-shimmer {
+  from { background-position: 100% 0, 0 0; }
+  to { background-position: -150% 0, 0 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ody-widget-pending { animation: none; }
+  .ody-widget-iframe { transition: none; }
+}

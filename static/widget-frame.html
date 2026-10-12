@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Widget</title>
+<style>html,body{margin:0;background:transparent}</style>
+<script>
+// Boot page for interactive chat widgets (see static/js/widgetDocument.js).
+// Loaded in <iframe sandbox="allow-scripts">, so it runs in an opaque origin
+// under the widget CSP that core/middleware.py sends for this path. It accepts
+// exactly one render message from its parent and replaces itself with it.
+(function () {
+  var done = false;
+  addEventListener('message', function (e) {
+    if (done || e.source !== parent) return;
+    var d = e.data;
+    if (!d || d.type !== 'ody-widget:render' || typeof d.html !== 'string') return;
+    done = true;
+    document.open();
+    document.write(d.html);
+    document.close();
+  });
+  // Only after our own load: the host counts iframe load events to spot a
+  // widget navigating away, so this page's load must precede the render.
+  addEventListener('load', function () {
+    parent.postMessage({ type: 'ody-widget:ready' }, '*');
+  });
+})();
+</script>
+</head>
+<body></body>
+</html>

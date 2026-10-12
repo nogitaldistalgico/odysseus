@@ -70,6 +70,8 @@ The largest and most central subsystem. Chat submission → backend SSE → prog
 | **`voiceRecorder.js`** | Voice recording from the composer microphone. |
 | **`fileHandler.js`** | Attachment picker, paste/drop handling, upload, attachment strip rendering, pending-file management. |
 | **`codeRunner.js`** | Client-side execution affordances for code blocks returned by the model. |
+| **`widgets.js`** | Mounts ```` ```widget ```` fences in `#chat-history` as sandboxed iframes (`/static/widget-frame.html`): settle-then-mount, height/error messages, live theme push, source view and reload. |
+| **`widgetDocument.js`** | DOM-free half of widgets: the document a widget runs in (CSP, import map, base styles, bridge script), theme tokens, message validation. Server side: `src/widget_prompt.py`. |
 
 ---
 

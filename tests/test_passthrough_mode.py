@@ -334,6 +334,7 @@ def _chat_stream_endpoint(monkeypatch, model, message, captured):
 
     async def fake_build_context(*args, **kwargs):
         captured["agent_mode"] = kwargs.get("agent_mode")
+        captured["widgets"] = kwargs.get("widgets")
         return context
 
     async def fake_chat_stream(candidates, messages, **kwargs):
@@ -721,3 +722,16 @@ def test_call_to_passthrough_model_carries_chat_header(monkeypatch, hugo_pattern
 def test_call_to_other_model_has_no_chat_header(monkeypatch, hugo_patterns):
     headers = _call_headers(monkeypatch, "local-model", "chat-2", {})
     assert "X-Odysseus-Chat" not in headers
+
+
+# --------------------------------------------------------------------------- #
+# Interactive widgets: the client's opt-in reaches build_chat_context, which
+# skips the whole preface (widget prompt included) for passthrough models.
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("form", "expected"), [({"widgets": "true"}, True), ({}, False)])
+async def test_chat_stream_forwards_widget_opt_in(monkeypatch, hugo_patterns, form, expected):
+    captured = await _run_stream(monkeypatch, OTHER, {"mode": "chat", **form}, "Baue mir einen Zinsrechner")
+
+    assert captured["widgets"] is expected

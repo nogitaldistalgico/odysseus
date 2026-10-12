@@ -24,6 +24,9 @@ class ChatRequest(BaseModel):
     
     # Fitness Coach
     is_fitness_coach: Optional[bool] = Field(default=False, description="Whether this request should run in the fitness coach sandbox")
+
+    # Interactive widgets (src/widget_prompt.py)
+    widgets: Optional[bool] = Field(default=False, description="The client renders ```widget fences, so tell the model it may emit them")
     
     @field_validator('message')
     @classmethod

@@ -103,7 +103,9 @@ def setup_companion_routes() -> APIRouter:
             "name": "odysseus",
             "version": APP_VERSION,
             "owner": token_owner(request),
-            "capabilities": {"chat": True, "streaming": True},
+            # widgets: send widgets=true with a chat request to let the model
+            # answer with ```widget fences (src/widget_prompt.py).
+            "capabilities": {"chat": True, "streaming": True, "widgets": True},
         }
 
     @router.get("/models")

@@ -19,6 +19,10 @@ export const CORPUS = [
   ['fence with blank lines inside', '```js\nconst a = 1;\n\nconst b = 2;\n```\n\nafter the code'],
   ['two consecutive fences', '```\nfirst block\n```\n\n```\nsecond block\n```\n\ntail'],
   ['mermaid diagram', 'Diagram:\n\n```mermaid\ngraph TD\nA-->B\n```\n\nafter diagram'],
+  [
+    'interactive widget',
+    'Try it:\n\n```widget\n<div class="card"><input id="r" type="range"></div>\n\n<script>\n  r.oninput = () => {};\n</script>\n```\n\nDrag the slider.',
+  ],
   ['gfm table', 'Data:\n\n| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nafter table'],
   [
     'mixed document',

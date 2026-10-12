@@ -845,6 +845,7 @@ async function _streamToHolder(modelIdx, sessionId, msg, holderEl, abortCtrl) {
   const fd = new FormData();
   fd.append('message', msg);
   fd.append('session', sessionId);
+  fd.append('widgets', 'true'); // group replies render in #chat-history (widgets.js)
 
   let accumulated = '';
   let _buffer = '';

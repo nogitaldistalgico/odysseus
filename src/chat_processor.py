@@ -9,6 +9,7 @@ from src.chat_helpers import extract_urls
 from src.youtube_handler import is_youtube_url
 from src.search import comprehensive_web_search, fetch_webpage_content
 from src.prompt_security import UNTRUSTED_CONTEXT_POLICY, untrusted_context_message
+from src.widget_prompt import WIDGET_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +275,7 @@ class ChatProcessor:
         agent_mode: bool = False,
         incognito: bool = False,
         use_skills: bool = True,
+        use_widgets: bool = False,
     ) -> Tuple[List[Dict[str, str]], List[Dict[str, Any]], List[Dict[str, str]]]:
         """Build the context preface for LLM calls.
 
@@ -306,6 +308,12 @@ class ChatProcessor:
             "role": "system",
             "content": UNTRUSTED_CONTEXT_POLICY,
         })
+        # Static, so it never disturbs the cached system prefix (see above).
+        if use_widgets:
+            preface.append({
+                "role": "system",
+                "content": WIDGET_SYSTEM_PROMPT,
+            })
 
         # Memory: core pinned facts + relevant pinned/extended recall.
         self._last_used_memories = []  # track what was injected

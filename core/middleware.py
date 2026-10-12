@@ -20,6 +20,26 @@ from src.owner_identity import INTERNAL_TOOL_USER, auth_disabled
 INTERNAL_TOOL_TOKEN = os.environ.get("ODYSSEUS_INTERNAL_TOKEN") or secrets.token_hex(32)
 INTERNAL_TOOL_HEADER = "X-Odysseus-Internal-Token"
 
+# Interactive chat widgets (static/js/widgetDocument.js) run in this page inside
+# <iframe sandbox="allow-scripts">: an opaque origin with inline scripts and a
+# few pinned CDNs, but no network access, forms or embedding outside the app.
+# Keep in sync with WIDGET_CSP in widgetDocument.js.
+WIDGET_FRAME_PATH = "/static/widget-frame.html"
+WIDGET_FRAME_CSP = (
+    "default-src 'none'; "
+    "script-src 'unsafe-inline' 'unsafe-eval' https://esm.sh https://cdn.jsdelivr.net "
+    "https://cdnjs.cloudflare.com https://unpkg.com; "
+    "style-src 'unsafe-inline'; "
+    "img-src data: blob:; "
+    "font-src data:; "
+    "media-src data: blob:; "
+    "worker-src blob:; "
+    "connect-src 'none'; "
+    "form-action 'none'; "
+    "base-uri 'none'; "
+    "frame-ancestors 'self'"
+)
+
 
 def get_application_route_path(scope: Mapping[str, object]) -> str:
     """Return the application-relative path used by Starlette routing.
@@ -111,7 +131,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if is_https:
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
-        if is_report:
+        if path == WIDGET_FRAME_PATH:
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
+            response.headers["Content-Security-Policy"] = WIDGET_FRAME_CSP
+        elif is_report:
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "
                 "script-src 'self' 'unsafe-inline'; "

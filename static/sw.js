@@ -7,7 +7,7 @@
 //   - Other static assets (images/fonts/libs): cache-first with bg refresh.
 //   - API / non-GET: never cached.
 // Bump CACHE_NAME whenever the precache list or SW logic changes.
-const CACHE_NAME = 'odysseus-v380-shared-config-image-editor-lazy-katex-mermaid';
+const CACHE_NAME = 'odysseus-v381-chat-widgets';
 
 // KaTeX resolves these from its own stylesheet, so caching the CSS without them
 // gives offline math fallback glyphs instead of proper typesetting.
@@ -40,11 +40,14 @@ const KATEX_FONTS = [
 const PRECACHE = [
   '/',
   '/static/style.css',
+  '/static/css/widgets.css',
   '/static/app.js',
   '/static/js/storage.js',
   '/static/js/appConfig.js',
   '/static/js/ui.js',
   '/static/js/markdown.js',
+  '/static/js/widgetDocument.js',
+  '/static/js/widgets.js',
   '/static/js/dragSort.js',
   '/static/js/sessions.js',
   '/static/js/memory.js',
@@ -188,6 +191,10 @@ self.addEventListener('fetch', (e) => {
 
   // Never touch API calls or non-GET.
   if (url.pathname.startsWith('/api/') || e.request.method !== 'GET') return;
+
+  // The widget frame's security is its CSP response header: always fetch it
+  // fresh so a tightened policy applies on the next load, not one load late.
+  if (url.pathname === '/static/widget-frame.html') return;
 
   // HTML navigation: stale-while-revalidate the app shell — but ONLY for the
   // SPA root. Other navigations (e.g. a deep-linked /static/*.html page) must

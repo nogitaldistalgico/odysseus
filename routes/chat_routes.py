@@ -68,6 +68,7 @@ from routes.chat_helpers import (
 from src.action_intents import ToolIntent, classify_tool_intent as _classify_tool_intent
 from src.image_model_ids import looks_like_image_generation_model
 from src.passthrough import is_passthrough_model
+from src.widget_prompt import wants_widgets
 from src.tool_policy import (
     WEB_TOOL_NAMES,
     build_effective_tool_policy,
@@ -875,6 +876,7 @@ def setup_chat_routes(
             webhook_manager=webhook_manager,
             allow_tool_preprocessing=allow_tool_preprocessing,
             defer_context_shaping=foreground_policy.enabled,
+            widgets=bool(chat_request.widgets),
         )
 
         is_fitness_coach = bool(chat_request.is_fitness_coach)
@@ -1066,6 +1068,8 @@ def setup_chat_routes(
             incognito = True
         # Fitness Coach property extraction
         is_fitness_coach = str(form_data.get("is_fitness_coach") or (body or {}).get("is_fitness_coach") or "").lower() == "true"
+        # Clients that render ```widget fences opt in (src/widget_prompt.py).
+        widgets = wants_widgets(form_data.get("widgets") or (body or {}).get("widgets"))
         
         plan_mode = str(form_data.get("plan_mode") or (body or {}).get("plan_mode") or "").lower() == "true"
         chat_mode = str(form_data.get("mode", "")).lower()  # 'chat' or 'agent'
@@ -1485,6 +1489,7 @@ def setup_chat_routes(
                 else None
             ),
             persist_user_message=not tool_approval_continuation,
+            widgets=widgets,
         )
 
         if is_fitness_coach:

@@ -1894,6 +1894,8 @@ import { loadPanel } from './panels.js';
 	        isAgentMode = true;
 	      }
 	      fd.append('mode', isAgentMode ? 'agent' : 'chat');
+	      // This UI renders ```widget fences (widgets.js), so the model may emit them.
+	      fd.append('widgets', 'true');
 	      fd.append('plan_mode', isPlanMode ? 'true' : 'false');
 	      if (!isPlanMode && _pendingApprovedPlan) {
 	        fd.append('approved_plan', _pendingApprovedPlan.slice(0, 8192));

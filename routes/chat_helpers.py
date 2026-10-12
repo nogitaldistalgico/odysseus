@@ -627,6 +627,7 @@ async def build_chat_context(
     defer_context_shaping: bool = False,
     continuation_context_message: str | None = None,
     persist_user_message: bool = True,
+    widgets: bool = False,
 ) -> ChatContext:
     """Build the full context (preface + messages) for an LLM call.
 
@@ -732,6 +733,9 @@ async def build_chat_context(
         agent_mode=agent_mode,
         incognito=incognito,
         use_skills=skills_enabled,
+        # Depends only on the client and a user pref, never on the message,
+        # so the system prefix stays stable turn over turn.
+        use_widgets=bool(widgets) and uprefs.get("widgets_enabled", True) is not False,
     )
     if use_rag is not None or is_research_spinoff or casual_low_signal:
         _preface_kwargs["use_rag"] = use_rag_val

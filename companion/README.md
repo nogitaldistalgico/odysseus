@@ -11,6 +11,13 @@ Odysseus server offers and pair to it, without duplicating any LLM logic.
 | GET | `/api/companion/pair` | **admin cookie** | pairing page (a form; never mints) |
 | POST | `/api/companion/pair` | **admin cookie** | mint a one-time pairing token (`?format=json` for an in-app screen) |
 
+`/info` lists `capabilities.widgets`: a client that can render ```` ```widget ````
+fences (a self-contained HTML fragment, run sandboxed; see
+`static/js/widgetDocument.js`) sends `widgets=true` (form field or JSON) with
+`/api/chat_stream` or `/api/chat`, and the model is told it may answer with one.
+Widgets are plain markdown in the message content, so history sync carries
+them unchanged; a client without a renderer simply shows the code block.
+
 `/models` scopes to the caller's real owner plus legacy null-owner shared rows
 (same rule as `owner_filter`) and never returns API-key material.
 

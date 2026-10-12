@@ -21,6 +21,7 @@
 // fallback so a bug can never produce broken output — only today's behavior.
 
 import { splitFinalized, describeOpenFence } from './streamingSegmenter.js';
+import { WIDGET_LANG } from './widgetDocument.js';
 
 // Compile-time escape hatch: set to false to force the plain full-re-render path.
 // (The per-instance try/catch `degraded` fallback below is the runtime safety net.)
@@ -81,8 +82,14 @@ export function createStreamRenderer(contentEl, { render, hljs } = {}) {
 
   // Stream the body of an unterminated code fence by appending only the new
   // characters to a stable <pre><code> text node — no re-parse, no re-highlight.
+  // A widget fence shows a placeholder card instead of its raw HTML; the widget
+  // itself mounts once the fence closes and its block is frozen (widgets.js).
   function appendOpenFence(tailText, fence) {
-    if (!appendMode) {
+    if (fence.lang.toLowerCase() === WIDGET_LANG) {
+      appendWidgetPlaceholder(tailText, fence);
+      return;
+    }
+    if (!appendMode || !appendMode.codeText) {
       clearTail();
       const pre = document.createElement('pre');
       const code = document.createElement('code');
@@ -98,6 +105,33 @@ export function createStreamRenderer(contentEl, { render, hljs } = {}) {
     if (code.length > appendMode.appendedLen) {
       appendMode.codeText.appendData(code.slice(appendMode.appendedLen));
       appendMode.appendedLen = code.length;
+    }
+  }
+
+  function appendWidgetPlaceholder(tailText, fence) {
+    if (!appendMode || !appendMode.widgetLines) {
+      clearTail();
+      const card = document.createElement('div');
+      card.className = 'ody-widget-pending';
+      const label = document.createElement('span');
+      label.className = 'ody-widget-pending-label';
+      label.textContent = 'Building interactive widget';
+      const lines = document.createElement('span');
+      lines.className = 'ody-widget-pending-lines';
+      card.append(label, lines);
+      contentEl.appendChild(card);
+      appendMode = { widgetLines: lines, scanned: fence.contentStart, newlines: 0 };
+      tailShownLen = 0;
+    }
+    // Count newlines incrementally; the label only changes once per line.
+    let added = 0;
+    for (let i = appendMode.scanned; i < tailText.length; i++) {
+      if (tailText.charCodeAt(i) === 10) added++;
+    }
+    appendMode.scanned = tailText.length;
+    if (added) {
+      appendMode.newlines += added;
+      appendMode.widgetLines.textContent = `${appendMode.newlines} lines`;
     }
   }
 
