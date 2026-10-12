@@ -26,9 +26,9 @@
 //     an inline delimiter across a blank line (e.g. markdown.js will turn
 //     `*a\n\nb*` into emphasis spanning two paragraphs), a block frozen before the
 //     closing delimiter arrives can disagree with the final full render.
-//   - afterClosedFence boundaries are trusted without the equivalence check, so a
-//     fence the real renderer parses differently (e.g. a stray 4-backtick line) can
-//     be mis-detected as a close.
+//   - afterClosedFence and beforeFence boundaries are trusted without the
+//     equivalence check, so a fence the real renderer parses differently (e.g. a
+//     stray 4-backtick line) can be mis-detected as a close or an opener.
 //   Both only occur for input the renderer itself handles oddly, and both are
 //   transient: chat.js re-renders the finished message from source, so the settled
 //   output is always canonical.
@@ -36,13 +36,15 @@
 // A fenced-code delimiter line: up to 3 leading spaces, then >=3 backticks or
 // tildes, then an optional info string.
 const FENCE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+// A fence opener with no indentation: never a list/quote continuation.
+const FENCE_OPEN_COL0_RE = /^(`{3,}|~{3,})/;
 
 /**
  * Scan `text` starting at `fromOffset` — which MUST be at top level (callers only
  * ever advance to a finalized boundary, never into a fence) — and collect the
  * candidate cut points.
  *
- * @returns {{ boundaries: Array<{offset:number, afterClosedFence:boolean}>, inFence:boolean }}
+ * @returns {{ boundaries: Array<{offset:number, afterClosedFence:boolean, beforeFence?:boolean}>, inFence:boolean }}
  *   - A blank-line run at top level yields a boundary at the start of the next
  *     non-blank line (`afterClosedFence: false`).
  *   - A fence close yields a boundary just past the closing fence line
@@ -93,7 +95,11 @@ function findBoundaries(text, fromOffset) {
         }
         j = nl2 + 1;
       }
-      boundaries.push({ offset: j, afterClosedFence: false });
+      // A blank line followed by a fence opener at column 0 starts a code
+      // block that nothing before it can absorb (see beforeFence below).
+      const nextNl = text.indexOf('\n', j);
+      const nextLine = text.slice(j, nextNl === -1 ? n : nextNl);
+      boundaries.push({ offset: j, afterClosedFence: false, beforeFence: FENCE_OPEN_COL0_RE.test(nextLine) });
       i = j;
     } else {
       i = afterNl;
@@ -116,6 +122,12 @@ function findBoundaries(text, fromOffset) {
  */
 function cutIsRenderSafe(before, after, render) {
   return render(before) + render(after) === render(before + after);
+}
+
+// An odd number of ``` in a segment means an inline run the renderer could pair
+// with the following fence; such a cut is left to the equivalence check.
+function balancedBackticks(segment) {
+  return (segment.match(/```/g) || []).length % 2 === 0;
 }
 
 /**
@@ -141,6 +153,14 @@ export function splitFinalized(text, render, committedLen = 0) {
 
     if (afterClosedFence) {
       // A completed code block — always safe to freeze through here.
+      best = offset;
+    } else if (boundaries[k].beforeFence && balancedBackticks(text.slice(segStart, offset))) {
+      // The next block is a fence, possibly still open. The renderer extracts
+      // fences before anything else, so the prose before it renders the same
+      // either way; the equivalence check can't show that while the fence is
+      // unclosed (it renders as paragraphs until then). Freezing here lets the
+      // open fence stream in append-mode (or as a widget placeholder) instead
+      // of re-rendering as prose on every token.
       best = offset;
     } else {
       // A prose/list/table boundary. We need a following block to compare

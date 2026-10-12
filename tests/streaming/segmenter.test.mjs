@@ -63,3 +63,20 @@ test('does NOT split a loose list (blank line between items is not a boundary)',
   // The list must not be cut in the middle: either nothing or the whole list.
   assert.ok(n === 0 || n >= '- a\n\n- b\n\n'.length, `loose list was cut at ${n}`);
 });
+
+test('prose before a still-open fence is finalized, so the fence can stream in append-mode', () => {
+  for (const text of ['Run this:\n\n```python\nprint("hi")\nx = 1', 'Try it:\n\n```widget\n<div class="card">\n  <label>Rate']) {
+    const n = splitFinalized(text, render);
+    assert.equal(text.slice(n).slice(0, 3), '```', text);
+  }
+});
+
+test('an indented fence after a list item only splits where the render agrees', () => {
+  const text = '- item\n\n  ```js\n  x';
+  assert.ok(splitOk(text, splitFinalized(text, render)));
+});
+
+test('an unbalanced inline ``` before the fence keeps the equivalence check', () => {
+  const text = 'odd ``` inline\n\n```js\nx';
+  assert.equal(splitFinalized(text, render), 0);
+});
