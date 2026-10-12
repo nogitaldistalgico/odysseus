@@ -178,7 +178,9 @@ export function readWidgetMessage(data) {
 }
 
 // Odysseus × Apple base styles. Widgets get good-looking controls for free and
-// only add layout-specific CSS.
+// only add layout-specific CSS. html/body heights are pinned to their content
+// (full-page documents often set height:100% or 100vh), otherwise the measured
+// height would just echo the iframe's and the widget could never grow.
 const BASE_CSS = `
 :root{--radius:12px;--radius-sm:8px;--gap:12px;
 --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",system-ui,sans-serif;
@@ -188,6 +190,7 @@ const BASE_CSS = `
 :root[data-theme=light]{--series-1:#007aff;--series-2:#34c759;--series-3:#ff9500;--series-4:#af52de;--series-5:#ff2d55;--series-6:#32ade6}
 *,*::before,*::after{box-sizing:border-box}
 html{overflow:hidden;background:transparent}
+html,body{height:auto!important;min-height:0!important}
 html[data-overflow]{overflow-y:auto}
 body{margin:0;padding:2px;display:flow-root;background:transparent;color:var(--fg);
 font:14px/1.5 var(--font);-webkit-font-smoothing:antialiased}
@@ -222,15 +225,20 @@ canvas,svg,img{max-width:100%}
 
 // Runs inside the widget before any widget code: height reporting, error
 // reporting, live theme updates and a `leave` notice if the widget navigates
-// away. `parent` is captured first because widget code may reassign it. Posts carry only a height or an error
+// away. `parent` is captured first because widget code may reassign it.
+// Feedback guard: content sized from the viewport (100vh, height:100% on a
+// wrapper) grows by exactly as much as the frame just grew; reporting that
+// would resize the frame forever, so such a measurement is not reported. Posts carry only a height or an error
 // string, so the '*' target (the parent is the app, the frame is opaque) leaks
 // nothing.
 function bridgeScript() {
   return `(function(){
-var MAX=${MAX_WIDGET_HEIGHT},P=parent,root=document.documentElement,last=-1,queued=false;
+var MAX=${MAX_WIDGET_HEIGHT},P=parent,root=document.documentElement,last=-1,queued=false,lastInner=-1,lastExtra=NaN;
 function post(m){try{P.postMessage(m,'*')}catch(_){}}
 addEventListener('pagehide',function(){post({type:'${MSG.leave}'})});
-function measure(){queued=false;var h=Math.ceil(root.getBoundingClientRect().height);
+function measure(){queued=false;var h=Math.ceil(root.getBoundingClientRect().height),inner=innerHeight,extra=h-inner;
+var coupled=lastInner>=0&&inner!==lastInner&&extra===lastExtra;lastInner=inner;lastExtra=extra;
+if(coupled)return;
 if(h>MAX){root.setAttribute('data-overflow','')}else{root.removeAttribute('data-overflow')}
 if(h!==last){last=h;post({type:'${MSG.resize}',height:Math.min(h,MAX)})}}
 function schedule(){if(!queued){queued=true;requestAnimationFrame(measure)}}

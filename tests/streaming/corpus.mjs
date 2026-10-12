@@ -20,6 +20,10 @@ export const CORPUS = [
   ['two consecutive fences', '```\nfirst block\n```\n\n```\nsecond block\n```\n\ntail'],
   ['mermaid diagram', 'Diagram:\n\n```mermaid\ngraph TD\nA-->B\n```\n\nafter diagram'],
   [
+    'widget with a title info string',
+    'Endgame:\n\n```widget title="Die besten Items"\n<!DOCTYPE html>\n<html lang="de">\n<body><p>hi</p></body>\n</html>\n```\n\nViel Spaß.',
+  ],
+  [
     'interactive widget',
     'Try it:\n\n```widget\n<div class="card"><input id="r" type="range"></div>\n\n<script>\n  r.oninput = () => {};\n</script>\n```\n\nDrag the slider.',
   ],

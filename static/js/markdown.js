@@ -14,6 +14,12 @@ var escapeHtml = uiModule.esc;
 // (kept local because the Node test harnesses stub this module's imports).
 const WIDGET_LANG = 'widget';
 
+// `title="…"` (or title='…' / title=word) from a widget fence's info string.
+function widgetTitleFromInfo(info) {
+  const m = /\btitle\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))/i.exec(info || '');
+  return m ? (m[1] ?? m[2] ?? m[3] ?? '').trim().slice(0, 120) : '';
+}
+
 // Mermaid and KaTeX are vendored under /static/lib and fetched on first use.
 // Loading them from <head> cost every session ~985 KB on the wire even though
 // most chats never contain a diagram or a formula. Both loaders memoise the
@@ -622,7 +628,12 @@ export function mdToHtml(src, opts) {
   // ___ALLOWED_HTML_0___) can leak into quoted HTML/JS samples, because the
   // placeholder gets captured as literal code content and never restored inside
   // the final <pre><code> block.
-  s = s.replace(/```(\w+)?\n([\s\S]*?)```/g, (_, lang, code) => {
+  //
+  // Widget fences may carry an info string after the language (```widget
+  // title="…"), which models add on their own; other fences keep the strict
+  // "language, then newline" form so prose like "use ```js for that" stays prose.
+  s = s.replace(/```(?:(widget)(?![\w-])([^\n`]*)|(\w+)?)\n([\s\S]*?)```/gi, (_, widgetTag, widgetInfo, fenceLang, code) => {
+    const lang = widgetTag ? WIDGET_LANG : fenceLang;
     const cleaned = code
       .replace(/\r\n/g, '\n')
       .replace(/[ \t]+$/gm, '')
@@ -651,7 +662,9 @@ export function mdToHtml(src, opts) {
       : '';
     const editBtn = `<button type="button" class="edit-code" title="Edit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>`;
     const codeHtml = `<pre><code${langClass} data-lang="${lang || ''}">${escapeHtml(escaped)}</code>${runBtn}${editBtn}<button type="button" class="copy-code" data-code="${escapeHtml(escaped)}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></pre>`;
-    codeBlocks.push(isWidget ? `<div class="ody-widget">${codeHtml}</div>` : codeHtml);
+    const widgetTitle = isWidget ? widgetTitleFromInfo(widgetInfo) : '';
+    const widgetAttrs = widgetTitle ? ` data-widget-title="${escapeHtml(widgetTitle)}"` : '';
+    codeBlocks.push(isWidget ? `<div class="ody-widget"${widgetAttrs}>${codeHtml}</div>` : codeHtml);
 
     return placeholder;
   });

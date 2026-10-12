@@ -65,7 +65,7 @@ function mountFrame(rec) {
   iframe.setAttribute('allow', ''); // no camera, mic, clipboard, fullscreen, ...
   iframe.setAttribute('referrerpolicy', 'no-referrer');
   iframe.setAttribute('loading', 'lazy');
-  iframe.setAttribute('title', 'Interactive widget');
+  iframe.setAttribute('title', rec.box.dataset.widgetTitle || 'Interactive widget');
   iframe.style.height = `${heightCache.get(rec.hash) || DEFAULT_WIDGET_HEIGHT}px`;
   iframe.src = WIDGET_FRAME_URL;
   // A sandboxed frame may still navigate itself (location = 'https://…'), which

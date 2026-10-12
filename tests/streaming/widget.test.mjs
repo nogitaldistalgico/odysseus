@@ -34,6 +34,44 @@ test('a widget fence renders as a wrapped, highlighted-as-HTML code block', () =
   assert.match(html, /<\/pre><\/div>/);
 });
 
+test('a widget fence may carry an info string, as models write it', () => {
+  const variants = [
+    '```widget title="Die besten Minecraft-Items"\n',
+    "```widget title='Rechner'\n",
+    '```widget \n',
+    '```widget\r\n',
+    '```Widget\n',
+  ];
+  for (const head of variants) {
+    const html = md.mdToHtml(`Endgame:\n\n${head}<!DOCTYPE html>\n<p>x</p>\n\`\`\`\n\nDone.`);
+    assert.match(html, /<div class="ody-widget"[^>]*><pre><code class="language-html" data-lang="widget">/, JSON.stringify(head));
+  }
+  assert.match(
+    md.mdToHtml('```widget title="Die besten Minecraft-Items"\n<p>x</p>\n```'),
+    /<div class="ody-widget" data-widget-title="Die besten Minecraft-Items">/,
+  );
+});
+
+test('a widget title is escaped', () => {
+  const html = md.mdToHtml("```widget title='\"><img src=x onerror=alert(1)>'\n<p>x</p>\n```");
+  assert.ok(!html.includes('<img'));
+  assert.match(html, /data-widget-title="&quot;&gt;&lt;img src=x onerror=alert\(1\)&gt;"/);
+});
+
+test('only widget fences accept an info string; prose and other fences stay strict', () => {
+  assert.ok(!md.mdToHtml('use ```js for that\nand more ``` here').includes('<pre>'));
+  assert.ok(!md.mdToHtml('```widgets\n<p>x</p>\n```').includes('ody-widget'));
+});
+
+test('a widget fence quoted inside another code block stays code', () => {
+  const html = md.mdToHtml('```python\nprint("```widget title=x")\n```');
+  assert.ok(!html.includes('ody-widget'));
+});
+
+test('an open widget fence with a title still streams as a placeholder', () => {
+  assert.equal(describeOpenFence('```widget title="Rechner"\n<div>').lang, WIDGET_LANG);
+});
+
 test('other fences are unchanged', () => {
   const html = md.mdToHtml('```html\n<p>x</p>\n```');
   assert.ok(!html.includes('ody-widget'));
@@ -67,6 +105,8 @@ test('widget document: CSP first, then theme, bridge and the widget body', () =>
   assert.ok(doc.includes('id="ody-theme"'));
   assert.ok(doc.endsWith('<body><p id="w">hi</p></body></html>'), 'model doctype is dropped');
   assert.ok(doc.includes(MSG.resize) && doc.includes(MSG.theme) && doc.includes(MSG.leave));
+  // Full-page documents (height:100%, 100vh) must not pin the measured height.
+  assert.ok(doc.includes('html,body{height:auto!important;min-height:0!important}'));
 });
 
 test('CSP blocks network, forms and base hijacking', () => {
