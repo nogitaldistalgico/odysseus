@@ -17,7 +17,10 @@ from src.auth_helpers import get_current_user, effective_user
 from src.constants import STUDIO_MEDIA_DIR, STUDIO_CHARACTERS_DIR, STUDIO_THUMBNAIL_DIR, UPLOAD_DIR
 from src.settings import load_settings, get_user_setting
 from src.upload_limits import STUDIO_UPLOAD_MAX_BYTES, read_upload_limited
-from routes.studio.studio_helpers import _owner_filter, _media_to_dict, get_openrouter_api_key, require_studio_privilege
+from routes.studio.studio_helpers import (
+    _owner_filter, _media_to_dict, get_openrouter_api_key, require_studio_privilege,
+    is_local_model_id, local_photo_models, resolve_local_photo_model,
+)
 from routes.studio.studio_preprocess import (
     get_model_constraints, preprocess_reference_image, validate_payload_params,
     supports_real_continuation, supports_video_editing, supports_character_reference,
@@ -149,6 +152,12 @@ def _image_extension(data: bytes, content_type: Optional[str], url: Optional[str
     return ".png"
 
 
+def _has_image_magic(data: bytes) -> bool:
+    return any(data.startswith(magic) for magic, _ in _IMAGE_MAGIC) or (
+        data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+    )
+
+
 def _path_inside(root: str, path: str) -> bool:
     """True when *path* really resolves inside *root* (symlinks included)."""
     try:
@@ -272,7 +281,7 @@ STUDIO_MODELS_ERROR_TTL = 60.0
 _studio_models_lock = asyncio.Lock()
 
 @router.get("/api/studio/models")
-async def get_studio_models():
+async def get_studio_models(request: Request):
     """Returns a dynamic list of OpenRouter models for image and video generation.
     
     Video model entries include constraint metadata (supported_resolutions,
@@ -281,7 +290,27 @@ async def get_studio_models():
     
     Both photo and video entries include ``supports_character_reference``
     derived from each model's ``architecture.input_modalities``.
+
+    The user's local image endpoints (Settings -> Models, model_type "image")
+    are prepended to the photo list per request. They are never cached, and
+    they show up even when OpenRouter is unreachable or has no key.
     """
+    models = await _openrouter_studio_models()
+    db = SessionLocal()
+    try:
+        local = local_photo_models(db, effective_user(request))
+    except Exception:
+        logger.exception("Failed to list local image endpoints for the studio")
+        local = []
+    finally:
+        db.close()
+    if not local:
+        return models
+    # A new dict: the cached OpenRouter list must stay free of local entries.
+    return {**models, "photo": local + list(models.get("photo") or [])}
+
+
+async def _openrouter_studio_models():
     global _studio_models_cache, _studio_models_cache_time, _studio_models_error_time
 
     if _studio_models_cache and (time.time() - _studio_models_cache_time) < CACHE_TTL:
@@ -497,7 +526,8 @@ async def get_model_constraints_endpoint(model_id: str):
     }
     ```
     """
-    constraints = await get_model_constraints(model_id)
+    # Local image models have no OpenRouter constraints; skip the lookup.
+    constraints = {} if is_local_model_id(model_id) else await get_model_constraints(model_id)
     return {
         "model_id": model_id,
         "supported_resolutions": constraints.get("supported_resolutions", []),
@@ -531,6 +561,12 @@ async def estimate_cost(request: Request, req: CostEstimateRequest):
     """
     require_studio_privilege(request)
     from routes.studio.studio_pricing import estimate_video_cost
+
+    if is_local_model_id(req.model):
+        return {
+            "usd": 0.0, "basis": "local model, free", "sku": None,
+            "model": req.model, "duration": req.duration, "currency": "USD",
+        }
 
     constraints = await get_model_constraints(req.model)
     skus = constraints.get("pricing_skus") or {}
@@ -804,130 +840,224 @@ async def delete_studio_media_legacy(request: Request, media_id: str):
     """
     return await _delete_studio_media(request, media_id)
 
+# A FLUX-class model on a Mac takes 4-7 minutes per image; the OpenRouter
+# path's 180 s cut those off mid-generation.
+LOCAL_IMAGE_TIMEOUT = httpx.Timeout(connect=30.0, read=900.0, write=60.0, pool=30.0)
+
+
+async def _openrouter_photo(client, db, req: PhotoGenRequest, target_model: str, user):
+    """Generate on OpenRouter. Returns ``(image_bytes, content_type, url)``."""
+    api_key = get_openrouter_api_key(db)
+    if not api_key:
+        raise HTTPException(400, "OpenRouter API key not configured. Add OpenRouter in Settings -> Models.")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": STUDIO_REFERER,
+        "X-OpenRouter-Title": "Odysseus Studio"
+    }
+    
+    payload = {
+        "model": target_model,
+    }
+    
+    refs = []
+    # Reference images are downscaled before they go out. The video path
+    # already did this; photos sent the original, so a 12 MP phone photo
+    # became ~16 MB of base64 in the request body. An empty constraints
+    # dict makes find_best_size fall back to its 1024 px cap.
+    _photo_constraints: dict = {}
+
+    # Backward compatibility for base_media_id string
+    if req.base_media_id:
+        for m_id in req.base_media_id.split(","):
+            m_id = m_id.strip()
+            if m_id:
+                refs.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": _get_preprocessed_base64_data_url(m_id, _photo_constraints, user)
+                    }
+                })
+                
+    # New structured references
+    if req.media_references:
+        for m_ref in req.media_references:
+            if m_ref.id:
+                # For photos, all references are treated as input_references regardless of role
+                refs.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": _get_preprocessed_base64_data_url(m_ref.id, _photo_constraints, user)
+                    }
+                })
+
+    prompt = req.prompt
+    if req.character_ids:
+        prompt = await _apply_character_references(
+            prompt, req.character_ids, db, refs, 
+            req.character_prompt_suffix, req.character_mapping_template,
+            owner=user,
+        )
+        
+    payload["prompt"] = prompt
+    
+    if refs:
+        payload["input_references"] = refs
+
+    if req.negative_prompt:
+        payload["negative_prompt"] = req.negative_prompt
+    if req.size:
+        payload["size"] = req.size
+    if req.seed is not None:
+        payload["seed"] = req.seed
+    if req.steps is not None:
+        payload["steps"] = req.steps
+
+    resp = await client.post("https://openrouter.ai/api/v1/images", json=payload, headers=headers)
+    if resp.status_code != 200:
+        raise HTTPException(500, f"OpenRouter API error: {resp.status_code} {resp.text}")
+    
+    data = resp.json()
+    b64_data = data.get("data", [{}])[0].get("b64_json")
+    url_data = data.get("data", [{}])[0].get("url")
+    
+    if not b64_data and not url_data:
+        raise HTTPException(500, "No image data returned from OpenRouter.")
+
+    if b64_data:
+        return base64.b64decode(b64_data), None, None
+    img_resp = await client.get(url_data)
+    img_resp.raise_for_status()
+    return img_resp.content, img_resp.headers.get("content-type"), url_data
+
+
+async def _local_photo(db, req: PhotoGenRequest, target_model: str, user):
+    """Generate on a local OpenAI-compatible image endpoint (model ids
+    "local/<endpoint_id>/<model>"). Returns ``(image_bytes, content_type, url)``.
+
+    No OpenRouter key is involved. The local servers take neither reference
+    images nor a negative prompt yet: references are rejected, the negative
+    prompt is dropped.
+    """
+    if req.base_media_id or req.media_references or req.character_ids:
+        raise HTTPException(
+            400,
+            "Local image models don't support reference images or characters yet. "
+            "Remove them or pick another model.",
+        )
+
+    from urllib.parse import urljoin, urlsplit
+    from src.endpoint_resolver import resolve_endpoint_runtime
+    from src.url_safety import check_outbound_url
+
+    ep, model = resolve_local_photo_model(db, target_model, user)
+    base, api_key = resolve_endpoint_runtime(ep, owner=user)
+    base = base.rstrip("/")
+    if not base.endswith("/v1"):
+        base += "/v1"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+    payload: Dict[str, Any] = {
+        "model": model,
+        "prompt": req.prompt,
+        "n": 1,
+        "response_format": "b64_json",
+    }
+    if req.size:
+        payload["size"] = req.size
+    if req.seed is not None:
+        payload["seed"] = req.seed
+    if req.steps is not None:
+        payload["steps"] = req.steps
+
+    logger.info("Studio local photo: endpoint=%s model=%s size=%s", ep.id, model, req.size)
+    async with httpx.AsyncClient(timeout=LOCAL_IMAGE_TIMEOUT) as client:
+        try:
+            resp = await client.post(f"{base}/images/generations", json=payload, headers=headers)
+        except httpx.TimeoutException:
+            raise HTTPException(504, "Local image endpoint timed out.")
+        except httpx.RequestError as e:
+            raise HTTPException(502, f"Local image endpoint unreachable: {e}")
+        if resp.status_code != 200:
+            raise HTTPException(502, f"Local image endpoint error: {resp.status_code} {resp.text[:500]}")
+
+        item = (resp.json().get("data") or [{}])[0]
+        b64_data = item.get("b64_json")
+        url_data = item.get("url")
+        if b64_data:
+            image_bytes = base64.b64decode(b64_data)
+            url_data = None
+        elif url_data:
+            # The URL comes from the endpoint's response, not our config:
+            # resolve relative paths against the endpoint, vet it like the
+            # gallery does, and only hand the endpoint's key to the endpoint
+            # itself (same scheme and host).
+            url_data = urljoin(base + "/", url_data)
+            ok, reason = check_outbound_url(
+                url_data,
+                block_private=os.getenv("IMAGE_BLOCK_PRIVATE_IPS", "false").lower() == "true",
+            )
+            if not ok:
+                raise HTTPException(502, f"Local image endpoint returned an unsafe image URL: {reason}")
+            target, origin = urlsplit(url_data), urlsplit(base)
+            same_origin = (target.scheme, target.netloc) == (origin.scheme, origin.netloc)
+            img_resp = await client.get(url_data, headers=headers if same_origin else None)
+            img_resp.raise_for_status()
+            image_bytes = img_resp.content
+        else:
+            raise HTTPException(502, "No image data returned from the local image endpoint.")
+
+    # Only real image bytes get stored, and the extension comes from them
+    # alone: a Content-Type of text/html would otherwise be saved as .html
+    # and served inline from the app origin.
+    if not _has_image_magic(image_bytes):
+        raise HTTPException(502, "The local image endpoint did not return an image.")
+    return image_bytes, None, url_data
+
+
 @router.post("/api/studio/generate/photo")
 async def generate_photo(request: Request, req: PhotoGenRequest):
     user = require_studio_privilege(request)
     db = SessionLocal()
     try:
-        api_key = get_openrouter_api_key(db)
-        if not api_key:
-            raise HTTPException(400, "OpenRouter API key not configured. Add OpenRouter in Settings -> Models.")
-        
         settings = load_settings()
         target_model = req.model or get_user_setting("studio_openrouter_photo_model", user, settings.get("studio_openrouter_photo_model", ""))
         if not target_model:
             raise HTTPException(400, "No photo model specified. Set a default in Settings -> Studio or pass a model.")
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": STUDIO_REFERER,
-            "X-OpenRouter-Title": "Odysseus Studio"
-        }
+        if is_local_model_id(target_model):
+            image_bytes, content_type, url_data = await _local_photo(db, req, target_model, user)
+        else:
+            async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+                image_bytes, content_type, url_data = await _openrouter_photo(client, db, req, target_model, user)
+
+        media_id = f"st_{uuid.uuid4().hex[:12]}"
+
+        # The extension used to be hardcoded to .png even when the model
+        # answered with a JPEG or WebP URL, so the stored file's type and
+        # its name disagreed and clients mis-rendered it.
+        ext = _image_extension(image_bytes, content_type, url_data)
+        filename = f"{media_id}{ext}"
+        filepath = os.path.join(STUDIO_MEDIA_DIR, filename)
+        with open(filepath, "wb") as f:
+            f.write(image_bytes)
+
+        new_media = StudioMedia(
+            id=media_id,
+            filename=filename,
+            media_type="photo",
+            prompt=req.prompt,
+            model=target_model,
+            owner=user,
+            seed=req.seed,
+            generation_mode="generate",
+            file_size=os.path.getsize(filepath)
+        )
+        db.add(new_media)
+        db.commit()
         
-        payload = {
-            "model": target_model,
-        }
-        
-        refs = []
-        # Reference images are downscaled before they go out. The video path
-        # already did this; photos sent the original, so a 12 MP phone photo
-        # became ~16 MB of base64 in the request body. An empty constraints
-        # dict makes find_best_size fall back to its 1024 px cap.
-        _photo_constraints: dict = {}
-
-        # Backward compatibility for base_media_id string
-        if req.base_media_id:
-            for m_id in req.base_media_id.split(","):
-                m_id = m_id.strip()
-                if m_id:
-                    refs.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": _get_preprocessed_base64_data_url(m_id, _photo_constraints, user)
-                        }
-                    })
-                    
-        # New structured references
-        if req.media_references:
-            for m_ref in req.media_references:
-                if m_ref.id:
-                    # For photos, all references are treated as input_references regardless of role
-                    refs.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": _get_preprocessed_base64_data_url(m_ref.id, _photo_constraints, user)
-                        }
-                    })
-
-        prompt = req.prompt
-        if req.character_ids:
-            prompt = await _apply_character_references(
-                prompt, req.character_ids, db, refs, 
-                req.character_prompt_suffix, req.character_mapping_template,
-                owner=user,
-            )
-            
-        payload["prompt"] = prompt
-        
-        if refs:
-            payload["input_references"] = refs
-
-        if req.negative_prompt:
-            payload["negative_prompt"] = req.negative_prompt
-        if req.size:
-            payload["size"] = req.size
-        if req.seed is not None:
-            payload["seed"] = req.seed
-        if req.steps is not None:
-            payload["steps"] = req.steps
-
-        async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
-            resp = await client.post("https://openrouter.ai/api/v1/images", json=payload, headers=headers)
-            if resp.status_code != 200:
-                raise HTTPException(500, f"OpenRouter API error: {resp.status_code} {resp.text}")
-            
-            data = resp.json()
-            b64_data = data.get("data", [{}])[0].get("b64_json")
-            url_data = data.get("data", [{}])[0].get("url")
-            
-            if not b64_data and not url_data:
-                raise HTTPException(500, "No image data returned from OpenRouter.")
-            
-            media_id = f"st_{uuid.uuid4().hex[:12]}"
-
-            # The extension used to be hardcoded to .png even when the model
-            # answered with a JPEG or WebP URL, so the stored file's type and
-            # its name disagreed and clients mis-rendered it.
-            if b64_data:
-                image_bytes = base64.b64decode(b64_data)
-                content_type = None
-            else:
-                img_resp = await client.get(url_data)
-                img_resp.raise_for_status()
-                image_bytes = img_resp.content
-                content_type = img_resp.headers.get("content-type")
-
-            ext = _image_extension(image_bytes, content_type, url_data)
-            filename = f"{media_id}{ext}"
-            filepath = os.path.join(STUDIO_MEDIA_DIR, filename)
-            with open(filepath, "wb") as f:
-                f.write(image_bytes)
-
-            new_media = StudioMedia(
-                id=media_id,
-                filename=filename,
-                media_type="photo",
-                prompt=req.prompt,
-                model=target_model,
-                owner=user,
-                seed=req.seed,
-                generation_mode="generate",
-                file_size=os.path.getsize(filepath)
-            )
-            db.add(new_media)
-            db.commit()
-            
-            return _media_to_dict(new_media)
+        return _media_to_dict(new_media)
     except HTTPException:
         # HTTPException is an Exception, so without this the deliberate 400s
         # above ("OpenRouter API key not configured", "No photo model

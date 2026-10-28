@@ -79,6 +79,64 @@ def _media_to_dict(media: StudioMedia) -> Dict[str, Any]:
         "updated_at": media.updated_at.isoformat() if media.updated_at else None,
     }
 
+# ---------------------------------------------------------------------------
+# Local image endpoints (Settings -> Models, model_type == "image")
+# ---------------------------------------------------------------------------
+# Studio model ids for these look like "local/<endpoint_id>/<model>", so a
+# generate request names exactly one endpoint. Endpoint ids are short uuid
+# prefixes (no slash); the model part may contain slashes.
+LOCAL_MODEL_PREFIX = "local/"
+
+
+def is_local_model_id(model_id: Optional[str]) -> bool:
+    return bool(model_id) and model_id.startswith(LOCAL_MODEL_PREFIX)
+
+
+def _visible_local_image_endpoints(db, user):
+    from src.auth_helpers import owner_filter
+    q = db.query(ModelEndpoint).filter(
+        ModelEndpoint.model_type == "image",
+        ModelEndpoint.is_enabled == True,  # noqa: E712
+    )
+    return owner_filter(q, ModelEndpoint, user).all()
+
+
+def _endpoint_model_ids(ep) -> list:
+    from routes.model_routes import _visible_models
+    return _visible_models(ep.cached_models, ep.hidden_models, ep.pinned_models)
+
+
+def local_photo_models(db, user) -> list:
+    """Studio photo entries for every local image model the user may use."""
+    entries = []
+    for ep in _visible_local_image_endpoints(db, user):
+        for model in _endpoint_model_ids(ep):
+            entries.append({
+                "id": f"{LOCAL_MODEL_PREFIX}{ep.id}/{model}",
+                "name": f"{model} (lokal)",
+                "supports_character_reference": False,
+                "max_image_references": 0,
+                "supports_seed": True,
+                "pricing": {},
+            })
+    return entries
+
+
+def resolve_local_photo_model(db, model_id: str, user):
+    """Map a "local/<endpoint_id>/<model>" id to ``(endpoint, model)``.
+
+    Raises 400 when the endpoint is not visible to *user* (or disabled, or not
+    an image endpoint) or no longer offers the model.
+    """
+    _, _, rest = model_id.partition(LOCAL_MODEL_PREFIX)
+    ep_id, _, model = rest.partition("/")
+    if ep_id and model:
+        for ep in _visible_local_image_endpoints(db, user):
+            if ep.id == ep_id and model in _endpoint_model_ids(ep):
+                return ep, model
+    raise HTTPException(400, f"Local image model '{model_id}' is not available. Check Settings -> Models.")
+
+
 def get_openrouter_api_key(db) -> Optional[str]:
     """Retrieve the OpenRouter API key from the database."""
     # Look for endpoint where kind is openrouter or base_url contains openrouter.ai
