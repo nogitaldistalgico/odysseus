@@ -808,13 +808,27 @@ export function createComposer(root, ctx) {
     return 'Generate video';
   }
 
+  /** A still-running job with this model and prompt. Local models render one
+   *  image at a time, so a second click only queues behind it (an identical
+   *  request even gets the running job back from the server). */
+  function runningTwin() {
+    const snap = current();
+    const prompt = (snap.prompt || '').trim();
+    if (!prompt) return null;
+    for (const m of store.jobs.values()) {
+      if (m.model === snap.model && (m.prompt || '').trim() === prompt) return m;
+    }
+    return null;
+  }
+
   function renderFooter() {
     const btn = q('#st-c-generate');
     const label = btn.querySelector('.st-generate-label');
     const problem = validateComposer(current());
     btn.disabled = state.busy || !!problem || !store.modelsLoaded;
     btn.title = problem || '';
-    q('#st-c-problem').textContent = !store.modelsLoaded && !store.modelsError ? 'Loading models…' : (problem || '');
+    const hint = problem || (runningTwin() ? 'This prompt is already generating with this model.' : '');
+    q('#st-c-problem').textContent = !store.modelsLoaded && !store.modelsError ? 'Loading models…' : hint;
     label.textContent = state.busy ? 'Working…' : generateLabel();
     btn.classList.toggle('st-busy', state.busy);
   }
@@ -848,8 +862,10 @@ export function createComposer(root, ctx) {
       else media = await api.generateVideo(buildVideoRequest(snap, prefs));
       local.delete(placeholder.id);
       store.session = store.session.filter(id => id !== placeholder.id);
+      const alreadyRunning = store.jobs.has(media.id);
       ctx.upsertLibrary(media, { fromGeneration: true });
       if (media.job_status === 'pending') ctx.trackJob(media);
+      if (alreadyRunning) ctx.toast('Already generating — showing the running job.');
       state.activeId = media.id;
       if (media.job_status === 'completed') ctx.toast(isPhoto ? 'Photo ready' : 'Video ready', { leadingIcon: 'check' });
       else if (media.job_status === 'failed') ctx.toast(media.error || 'Generation failed', { duration: 8000 });
@@ -897,7 +913,9 @@ export function createComposer(root, ctx) {
     wireStageMain(active);
     strip.hidden = items.length < 2;
     strip.innerHTML = items.map(m => {
-      const poster = m.media_type === 'video' ? api.posterUrl(m) : (m._local ? null : api.mediaUrl(m));
+      // A pending or failed photo has no file yet; asking for it only paints a broken image.
+      const noFile = m._local || m.job_status === 'pending' || m.job_status === 'failed';
+      const poster = m.media_type === 'video' ? api.posterUrl(m) : (noFile ? null : api.mediaUrl(m));
       const pending = m.job_status === 'pending';
       return `<button type="button" class="st-strip-item${m.id === active.id ? ' active' : ''}${pending ? ' pending' : ''}${m.job_status === 'failed' ? ' failed' : ''}" data-id="${esc(m.id)}" title="${esc(m.prompt || '')}">
         ${poster ? `<img src="${esc(poster)}" alt="">` : `<span class="st-strip-icon">${m.media_type === 'video' ? ICONS.film : ICONS.image}</span>`}
@@ -917,7 +935,7 @@ export function createComposer(root, ctx) {
       media = `<div class="st-stage-pending"><div class="st-whirl" id="st-stage-whirl"></div>
         <div class="st-stage-pending-title">${isVideo ? 'Rendering video' : 'Generating photo'}</div>
         <div class="st-stage-pending-sub">${esc(m.model || '')} · <span class="st-elapsed" data-start="${m._startedAt || parseServerDate(m.created_at) || Date.now()}">0s</span></div>
-        ${isVideo && !m._local ? '<div class="st-hint">The job is finished on the server even if you close this window.</div>' : ''}</div>`;
+        ${!m._local ? '<div class="st-hint">The job is finished on the server even if you close this window.</div>' : ''}</div>`;
     } else if (failed) {
       media = `<div class="st-stage-failed"><div class="st-stage-failed-title">Generation failed</div><div class="st-stage-failed-text">${esc(m.error || 'The provider reported a failure.')}</div>
         ${m._retry ? '<button type="button" class="st-btn st-btn-ghost" id="st-stage-retry">Try again</button>' : ''}</div>`;
@@ -1058,6 +1076,8 @@ export function createComposer(root, ctx) {
     renderRefs(); renderStage();
   });
   bus.addEventListener('library', () => renderStage());
+  bus.addEventListener('job-added', () => renderFooter());
+  bus.addEventListener('job-done', () => renderFooter());
 
   ensureModelDefaults();
   renderAll();

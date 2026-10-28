@@ -11,7 +11,11 @@ settings never reached the Studio. Now:
   endpoint's own GET /models, asked with its bearer key;
 * a local id is generated on that endpoint's /v1/images/generations with no
   OpenRouter key, a long read timeout and the endpoint's own bearer key, with
-  reference and character images as base64 input_references like OpenRouter.
+  reference and character images as base64 input_references like OpenRouter;
+* that generation is a job: generate/photo answers at once with job_status
+  "pending", the image arrives in the background and GET /api/studio/jobs
+  reports completed/failed. An identical resubmission gets the running job,
+  and a pending photo a restart cut off is failed instead of hanging forever.
 
 The handlers are called directly against an in-memory SQLite database, so the
 owner/enabled/model_type filtering is the real query. No test touches the
@@ -59,6 +63,7 @@ def db_session(monkeypatch, tmp_path):
     monkeypatch.setattr(sr, "SessionLocal", Session)
     monkeypatch.setattr(sr, "STUDIO_MEDIA_DIR", str(tmp_path))
     monkeypatch.setattr(sh, "_local_caps_cache", {})
+    monkeypatch.setattr(sr, "_local_photo_jobs", {})
     return Session
 
 
@@ -204,13 +209,33 @@ def _patch_local_client(monkeypatch, captured, item=None, fetched=PNG):
     monkeypatch.setattr(sr, "get_user_setting", lambda key, user, default=None: default)
 
 
+def _generate_local(req):
+    """generate/photo, then let the background job finish and poll it once.
+    Returns ``(response, polled)``."""
+    async def _go():
+        media = await sr.generate_photo(_request(), req)
+        job = sr._local_photo_jobs.get(media["id"])
+        if job:
+            await job[0]
+        return media, await sr.check_video_job(_request(), media["id"])
+    return asyncio.run(_go())
+
+
 def test_generate_photo_goes_to_local_endpoint(db_session, monkeypatch, tmp_path):
     captured = {}
     _patch_local_client(monkeypatch, captured)
     req = sr.PhotoGenRequest(prompt="a lighthouse", model=LOCAL_ID, size="1024x768",
                              seed=7, steps=4, negative_prompt="blurry")
 
-    media = asyncio.run(sr.generate_photo(_request(), req))
+    pending, media = _generate_local(req)
+
+    # The request answers before the image exists...
+    assert pending["job_status"] == "pending"
+    assert pending["media_type"] == "photo"
+    assert pending["id"] == media["id"]
+    # ...and the job delivers it.
+    assert media["job_status"] == "completed"
+    assert media["file_size"] == len(PNG)
 
     assert captured["url"] == "http://192.168.40.142:11440/v1/images/generations"
     assert captured["json"] == {
@@ -240,8 +265,9 @@ def test_generate_photo_local_url_response(db_session, monkeypatch, tmp_path, ur
     _patch_local_client(monkeypatch, captured, item={"url": url})
     monkeypatch.setattr("src.url_safety.check_outbound_url", lambda u, **kw: (True, ""))
 
-    media = asyncio.run(sr.generate_photo(_request(), sr.PhotoGenRequest(prompt="x", model=LOCAL_ID)))
+    _, media = _generate_local(sr.PhotoGenRequest(prompt="x", model=LOCAL_ID))
 
+    assert media["job_status"] == "completed"
     assert captured["fetches"] == [(expected, {"Authorization": "Bearer sk-local"} if key_sent else None)]
     # Extension from the bytes, never from the endpoint's text/html header.
     assert media["filename"].endswith(".png")
@@ -253,10 +279,10 @@ def test_generate_photo_local_rejects_non_image_bytes(db_session, monkeypatch, t
     _patch_local_client(monkeypatch, captured, item={"url": "/out"}, fetched=b"<script>alert(1)</script>")
     monkeypatch.setattr("src.url_safety.check_outbound_url", lambda u, **kw: (True, ""))
 
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(sr.generate_photo(_request(), sr.PhotoGenRequest(prompt="x", model=LOCAL_ID)))
+    _, media = _generate_local(sr.PhotoGenRequest(prompt="x", model=LOCAL_ID))
 
-    assert exc.value.status_code == 502
+    assert media["job_status"] == "failed"
+    assert "did not return an image" in media["error"]
     assert list(tmp_path.iterdir()) == []
 
 
@@ -279,7 +305,7 @@ def test_generate_photo_local_sends_references_and_characters(db_session, monkey
     req = sr.PhotoGenRequest(prompt="Mira on a beach", model=LOCAL_ID,
                              media_references=[{"id": "scene1"}], character_ids=["c1"])
 
-    asyncio.run(sr.generate_photo(_request(), req))
+    _generate_local(req)
 
     refs = captured["json"]["input_references"]
     assert refs[0] == {"type": "image_url", "image_url": {"url": "data:image/png;base64,scene1"}}
@@ -321,3 +347,67 @@ def test_constraints_and_cost_are_empty_for_local_ids(monkeypatch):
     cost = asyncio.run(sr.estimate_cost(_request(), sr.CostEstimateRequest(model=LOCAL_ID)))
     assert cost["usd"] == 0.0
     assert cost["model"] == LOCAL_ID
+
+
+def test_identical_resubmission_returns_the_running_job(db_session, monkeypatch):
+    _patch_local_client(monkeypatch, {})
+    calls = []
+
+    async def _go():
+        release = asyncio.Event()
+
+        async def _slow_endpoint(base, headers, payload):
+            calls.append(payload)
+            await release.wait()
+            return PNG, None
+
+        monkeypatch.setattr(sr, "_call_local_image_endpoint", _slow_endpoint)
+        first = await sr.generate_photo(_request(), sr.PhotoGenRequest(prompt="x", model=LOCAL_ID))
+        again = await sr.generate_photo(_request(), sr.PhotoGenRequest(prompt="x", model=LOCAL_ID))
+        other = await sr.generate_photo(_request(), sr.PhotoGenRequest(prompt="x", model=LOCAL_ID, seed=3))
+        release.set()
+        await asyncio.gather(*(task for task, _ in list(sr._local_photo_jobs.values())))
+        after = await sr.generate_photo(_request(), sr.PhotoGenRequest(prompt="x", model=LOCAL_ID))
+        await asyncio.gather(*(task for task, _ in list(sr._local_photo_jobs.values())))
+        return first, again, other, after
+
+    first, again, other, after = asyncio.run(_go())
+
+    assert again["id"] == first["id"]       # still running: same job back
+    assert other["id"] != first["id"]       # a different request is a new job
+    assert after["id"] != first["id"]       # once finished, a new run is allowed
+    assert len(calls) == 3
+
+
+def test_pending_photo_without_a_task_is_failed_not_stuck(db_session, monkeypatch):
+    monkeypatch.setattr(sr, "require_studio_privilege", lambda request: "alice")
+    finalised = []
+
+    async def _finalize(media_id):
+        finalised.append(media_id)
+        return False
+
+    monkeypatch.setattr(sr, "finalize_video_job", _finalize)
+    db = db_session()
+    db.add_all([
+        StudioMedia(id="p1", filename="p1.png", media_type="photo", owner="alice", job_status="pending"),
+        StudioMedia(id="p2", filename="p2.png", media_type="photo", owner="alice", job_status="pending"),
+        StudioMedia(id="v1", filename="v1.mp4", media_type="video", owner="alice", job_status="pending",
+                    job_id="gen-1"),
+    ])
+    db.commit()
+    db.close()
+
+    polled = asyncio.run(sr.check_video_job(_request(), "p1"))
+    assert polled["job_status"] == "failed"
+    assert "restarted" in polled["error"]
+
+    asyncio.run(sr.finalize_pending_video_jobs())
+    db = db_session()
+    try:
+        assert db.get(StudioMedia, "p2").job_status == "failed"
+        assert db.get(StudioMedia, "v1").job_status == "pending"
+    finally:
+        db.close()
+    # Photos never go to the OpenRouter video finaliser; videos still do.
+    assert finalised == ["v1"]

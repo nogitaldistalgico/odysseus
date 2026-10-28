@@ -198,7 +198,7 @@ export function getMedia(id) {
 }
 
 // ---------------------------------------------------------------------------
-//  Video job polling
+//  Job polling (videos, and photos from local models)
 // ---------------------------------------------------------------------------
 
 let _pollTimer = null;
@@ -257,7 +257,8 @@ function _announce(media) {
   _syncBadges();
   if (store.prefs.resultToast === false) return;
   const failed = media.job_status === 'failed';
-  const label = failed ? 'Video generation failed' : 'Video ready';
+  const kind = media.media_type === 'video' ? 'Video' : 'Photo';
+  const label = failed ? `${kind} generation failed` : `${kind} ready`;
   uiModule.showToast(label, {
     duration: failed ? 8000 : 5000,
     leadingIcon: failed ? undefined : 'check',

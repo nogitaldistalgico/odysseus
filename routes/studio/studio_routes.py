@@ -944,18 +944,15 @@ async def _openrouter_photo(client, db, req: PhotoGenRequest, target_model: str,
     return img_resp.content, img_resp.headers.get("content-type"), url_data
 
 
-async def _local_photo(db, req: PhotoGenRequest, target_model: str, user):
-    """Generate on a local OpenAI-compatible image endpoint (model ids
-    "local/<endpoint_id>/<model>"). Returns ``(image_bytes, content_type, url)``.
+async def _prepare_local_photo(db, req: PhotoGenRequest, target_model: str, user):
+    """Resolve a local image model (ids "local/<endpoint_id>/<model>") and
+    build its request. Returns ``(base, headers, payload)``.
 
     No OpenRouter key is involved; the endpoint's own key goes along as a
     bearer token. Reference images and characters travel exactly as on
     OpenRouter (``input_references`` with base64 data URLs; the local servers
     take no http links). There is no negative prompt locally, so it is dropped.
     """
-    from urllib.parse import urljoin, urlsplit
-    from src.url_safety import check_outbound_url
-
     ep, model = resolve_local_photo_model(db, target_model, user)
     base, headers = local_api_base(ep, user)
     prompt, refs = await _photo_references(db, req, user)
@@ -974,8 +971,19 @@ async def _local_photo(db, req: PhotoGenRequest, target_model: str, user):
         payload["seed"] = req.seed
     if req.steps is not None:
         payload["steps"] = req.steps
+    return base, headers, payload
 
-    logger.info("Studio local photo: endpoint=%s model=%s size=%s refs=%d", ep.id, model, req.size, len(refs))
+
+async def _call_local_image_endpoint(base: str, headers: dict, payload: dict):
+    """POST *payload* to ``<base>/images/generations``. Returns
+    ``(image_bytes, url)``; raises HTTPException with a readable reason."""
+    from urllib.parse import urljoin, urlsplit
+    from src.url_safety import check_outbound_url
+
+    logger.info(
+        "Studio local photo: base=%s model=%s size=%s refs=%d",
+        base, payload.get("model"), payload.get("size"), len(payload.get("input_references") or []),
+    )
     async with httpx.AsyncClient(timeout=LOCAL_IMAGE_TIMEOUT) as client:
         try:
             resp = await client.post(f"{base}/images/generations", json=payload, headers=headers)
@@ -1017,7 +1025,123 @@ async def _local_photo(db, req: PhotoGenRequest, target_model: str, user):
     # and served inline from the app origin.
     if not _has_image_magic(image_bytes):
         raise HTTPException(502, "The local image endpoint did not return an image.")
-    return image_bytes, None, url_data
+    return image_bytes, url_data
+
+
+# ---------------------------------------------------------------------------
+# Local photo jobs
+# ---------------------------------------------------------------------------
+# A local model needs minutes per image (one at a time on the server), so a
+# synchronous request outlived client timeouts: the iOS app gave up, the user
+# resent, and every retry queued another image. Local photos therefore work
+# like videos: generate/photo answers at once with job_status "pending" and
+# clients poll GET /api/studio/jobs/{media_id}.
+#
+# The work runs as a task in this process (the app runs one uvicorn worker).
+# The map holds each running task, which also keeps it from being garbage
+# collected, plus a key of the request so an identical resubmission gets the
+# running job back instead of queueing a duplicate. A pending photo that is
+# not in the map was cut off by a restart and is marked failed.
+_local_photo_jobs: Dict[str, tuple] = {}
+
+
+def _local_photo_request_key(user, target_model: str, payload: dict) -> str:
+    import hashlib
+    import json
+    raw = json.dumps([user, target_model, payload], sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+async def _start_local_photo_job(db, req: PhotoGenRequest, target_model: str, user) -> Dict[str, Any]:
+    base, headers, payload = await _prepare_local_photo(db, req, target_model, user)
+
+    key = _local_photo_request_key(user, target_model, payload)
+    for running_id, (_task, running_key) in list(_local_photo_jobs.items()):
+        if running_key == key:
+            running = db.query(StudioMedia).filter(StudioMedia.id == running_id).first()
+            if running is not None and running.job_status == "pending":
+                return _media_to_dict(running)
+
+    media_id = f"st_{uuid.uuid4().hex[:12]}"
+    media = StudioMedia(
+        id=media_id,
+        # The real extension is only known from the bytes; the job renames
+        # the file if the server answers with something other than PNG.
+        filename=f"{media_id}.png",
+        media_type="photo",
+        prompt=req.prompt,
+        model=target_model,
+        owner=user,
+        seed=req.seed,
+        job_status="pending",
+        generation_mode="generate",
+    )
+    db.add(media)
+    db.commit()
+    # No await between the commit and registering the task, so the orphan
+    # sweep (same event loop) can never see this row without its task.
+    task = asyncio.create_task(_run_local_photo_job(media_id, base, headers, payload))
+    _local_photo_jobs[media_id] = (task, key)
+    return _media_to_dict(media)
+
+
+async def _run_local_photo_job(media_id: str, base: str, headers: dict, payload: dict) -> None:
+    filename = filepath = None
+    error = None
+    try:
+        image_bytes, url_data = await _call_local_image_endpoint(base, headers, payload)
+        filename = f"{media_id}{_image_extension(image_bytes, None, url_data)}"
+        filepath = os.path.join(STUDIO_MEDIA_DIR, filename)
+        with open(filepath, "wb") as f:
+            f.write(image_bytes)
+    except HTTPException as e:
+        error = str(e.detail)
+    except Exception as e:
+        logger.exception("Local photo job %s failed", media_id)
+        error = str(e) or type(e).__name__
+
+    # Synchronous from here on: the row is final before the task leaves the
+    # map, so the orphan sweep cannot fail a job that just finished.
+    db = SessionLocal()
+    try:
+        m = db.query(StudioMedia).filter(StudioMedia.id == media_id).first()
+        if m is None:
+            # Deleted while it was generating.
+            if filepath and os.path.exists(filepath):
+                os.remove(filepath)
+            return
+        if error is None:
+            m.filename = filename
+            m.file_size = os.path.getsize(filepath)
+            m.job_status = "completed"
+        else:
+            m.job_status = "failed"
+            m.error = error[:2000]
+        db.commit()
+    except Exception:
+        logger.exception("Saving local photo job %s failed", media_id)
+    finally:
+        db.close()
+        _local_photo_jobs.pop(media_id, None)
+
+
+_ORPHANED_PHOTO_ERROR = "Interrupted: the server restarted while this image was being generated."
+
+
+def fail_orphaned_photo_jobs(db, media_id: Optional[str] = None) -> int:
+    """Mark pending photos without a running task as failed."""
+    q = db.query(StudioMedia).filter(
+        StudioMedia.media_type == "photo", StudioMedia.job_status == "pending",
+    )
+    if media_id is not None:
+        q = q.filter(StudioMedia.id == media_id)
+    orphans = [m for m in q.all() if m.id not in _local_photo_jobs]
+    for m in orphans:
+        m.job_status = "failed"
+        m.error = _ORPHANED_PHOTO_ERROR
+    if orphans:
+        db.commit()
+    return len(orphans)
 
 
 @router.post("/api/studio/generate/photo")
@@ -1031,10 +1155,10 @@ async def generate_photo(request: Request, req: PhotoGenRequest):
             raise HTTPException(400, "No photo model specified. Set a default in Settings -> Studio or pass a model.")
 
         if is_local_model_id(target_model):
-            image_bytes, content_type, url_data = await _local_photo(db, req, target_model, user)
-        else:
-            async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
-                image_bytes, content_type, url_data = await _openrouter_photo(client, db, req, target_model, user)
+            return await _start_local_photo_job(db, req, target_model, user)
+
+        async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+            image_bytes, content_type, url_data = await _openrouter_photo(client, db, req, target_model, user)
 
         media_id = f"st_{uuid.uuid4().hex[:12]}"
 
@@ -1471,12 +1595,15 @@ async def finalize_video_job(media_id: str) -> bool:
 
 
 async def finalize_pending_video_jobs(max_age_hours: int = 48) -> int:
-    """Finalise every still-pending video job. Driven by the background loop."""
+    """Finalise every still-pending video job. Driven by the background loop,
+    which also fails local photo jobs a restart cut off."""
     db = SessionLocal()
     try:
+        fail_orphaned_photo_jobs(db)
         cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
         rows = (
             db.query(StudioMedia.id)
+            .filter(StudioMedia.media_type == "video")
             .filter(StudioMedia.job_status == "pending")
             .filter(StudioMedia.created_at >= cutoff)
             .all()
@@ -1504,6 +1631,12 @@ async def check_video_job(request: Request, media_id: str):
         if not m or (m.owner and m.owner != user):
             raise HTTPException(404, "Media not found")
         if m.job_status in ("completed", "failed"):
+            return _media_to_dict(m)
+        if m.media_type == "photo":
+            # Local photo jobs finish on their own task; there is nothing to
+            # poll upstream. Only a job lost to a restart needs resolving.
+            if fail_orphaned_photo_jobs(db, m.id):
+                db.refresh(m)
             return _media_to_dict(m)
     finally:
         db.close()
