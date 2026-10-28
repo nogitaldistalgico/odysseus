@@ -19,7 +19,8 @@ from src.settings import load_settings, get_user_setting
 from src.upload_limits import STUDIO_UPLOAD_MAX_BYTES, read_upload_limited
 from routes.studio.studio_helpers import (
     _owner_filter, _media_to_dict, get_openrouter_api_key, require_studio_privilege,
-    is_local_model_id, local_photo_models, resolve_local_photo_model,
+    is_local_model_id, local_api_base, local_photo_models, local_photo_targets,
+    resolve_local_photo_model,
 )
 from routes.studio.studio_preprocess import (
     get_model_constraints, preprocess_reference_image, validate_payload_params,
@@ -292,18 +293,22 @@ async def get_studio_models(request: Request):
     derived from each model's ``architecture.input_modalities``.
 
     The user's local image endpoints (Settings -> Models, model_type "image")
-    are prepended to the photo list per request. They are never cached, and
-    they show up even when OpenRouter is unreachable or has no key.
+    are prepended to the photo list per request. They are never written into
+    the OpenRouter cache, and they show up even when OpenRouter is unreachable
+    or has no key. Their capabilities (max_image_references, supports_seed)
+    come from each endpoint's own GET /models.
     """
     models = await _openrouter_studio_models()
-    db = SessionLocal()
+    local = []
     try:
-        local = local_photo_models(db, effective_user(request))
+        db = SessionLocal()
+        try:
+            targets = local_photo_targets(db, effective_user(request))
+        finally:
+            db.close()
+        local = await local_photo_models(targets)
     except Exception:
         logger.exception("Failed to list local image endpoints for the studio")
-        local = []
-    finally:
-        db.close()
     if not local:
         return models
     # A new dict: the cached OpenRouter list must stay free of local entries.
@@ -840,27 +845,16 @@ async def delete_studio_media_legacy(request: Request, media_id: str):
     """
     return await _delete_studio_media(request, media_id)
 
-# A FLUX-class model on a Mac takes 4-7 minutes per image; the OpenRouter
-# path's 180 s cut those off mid-generation.
-LOCAL_IMAGE_TIMEOUT = httpx.Timeout(connect=30.0, read=900.0, write=60.0, pool=30.0)
+# A FLUX-class model on a Mac takes 4-7 minutes per image, and about twice
+# that with reference images; the OpenRouter path's 180 s cut those off
+# mid-generation.
+LOCAL_IMAGE_TIMEOUT = httpx.Timeout(connect=30.0, read=1800.0, write=60.0, pool=30.0)
 
 
-async def _openrouter_photo(client, db, req: PhotoGenRequest, target_model: str, user):
-    """Generate on OpenRouter. Returns ``(image_bytes, content_type, url)``."""
-    api_key = get_openrouter_api_key(db)
-    if not api_key:
-        raise HTTPException(400, "OpenRouter API key not configured. Add OpenRouter in Settings -> Models.")
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "HTTP-Referer": STUDIO_REFERER,
-        "X-OpenRouter-Title": "Odysseus Studio"
-    }
-    
-    payload = {
-        "model": target_model,
-    }
-    
+async def _photo_references(db, req: PhotoGenRequest, user):
+    """``(prompt, input_references)`` for a photo request: base_media_id and
+    media_references plus character images, all as base64 data URLs, with
+    the character pseudonyms applied to the prompt."""
     refs = []
     # Reference images are downscaled before they go out. The video path
     # already did this; photos sent the original, so a 12 MP phone photo
@@ -899,8 +893,26 @@ async def _openrouter_photo(client, db, req: PhotoGenRequest, target_model: str,
             req.character_prompt_suffix, req.character_mapping_template,
             owner=user,
         )
-        
-    payload["prompt"] = prompt
+    return prompt, refs
+
+
+async def _openrouter_photo(client, db, req: PhotoGenRequest, target_model: str, user):
+    """Generate on OpenRouter. Returns ``(image_bytes, content_type, url)``."""
+    api_key = get_openrouter_api_key(db)
+    if not api_key:
+        raise HTTPException(400, "OpenRouter API key not configured. Add OpenRouter in Settings -> Models.")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": STUDIO_REFERER,
+        "X-OpenRouter-Title": "Odysseus Studio"
+    }
+    
+    prompt, refs = await _photo_references(db, req, user)
+    payload = {
+        "model": target_model,
+        "prompt": prompt,
+    }
     
     if refs:
         payload["input_references"] = refs
@@ -936,34 +948,26 @@ async def _local_photo(db, req: PhotoGenRequest, target_model: str, user):
     """Generate on a local OpenAI-compatible image endpoint (model ids
     "local/<endpoint_id>/<model>"). Returns ``(image_bytes, content_type, url)``.
 
-    No OpenRouter key is involved. The local servers take neither reference
-    images nor a negative prompt yet: references are rejected, the negative
-    prompt is dropped.
+    No OpenRouter key is involved; the endpoint's own key goes along as a
+    bearer token. Reference images and characters travel exactly as on
+    OpenRouter (``input_references`` with base64 data URLs; the local servers
+    take no http links). There is no negative prompt locally, so it is dropped.
     """
-    if req.base_media_id or req.media_references or req.character_ids:
-        raise HTTPException(
-            400,
-            "Local image models don't support reference images or characters yet. "
-            "Remove them or pick another model.",
-        )
-
     from urllib.parse import urljoin, urlsplit
-    from src.endpoint_resolver import resolve_endpoint_runtime
     from src.url_safety import check_outbound_url
 
     ep, model = resolve_local_photo_model(db, target_model, user)
-    base, api_key = resolve_endpoint_runtime(ep, owner=user)
-    base = base.rstrip("/")
-    if not base.endswith("/v1"):
-        base += "/v1"
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    base, headers = local_api_base(ep, user)
+    prompt, refs = await _photo_references(db, req, user)
 
     payload: Dict[str, Any] = {
         "model": model,
-        "prompt": req.prompt,
+        "prompt": prompt,
         "n": 1,
         "response_format": "b64_json",
     }
+    if refs:
+        payload["input_references"] = refs
     if req.size:
         payload["size"] = req.size
     if req.seed is not None:
@@ -971,7 +975,7 @@ async def _local_photo(db, req: PhotoGenRequest, target_model: str, user):
     if req.steps is not None:
         payload["steps"] = req.steps
 
-    logger.info("Studio local photo: endpoint=%s model=%s size=%s", ep.id, model, req.size)
+    logger.info("Studio local photo: endpoint=%s model=%s size=%s refs=%d", ep.id, model, req.size, len(refs))
     async with httpx.AsyncClient(timeout=LOCAL_IMAGE_TIMEOUT) as client:
         try:
             resp = await client.post(f"{base}/images/generations", json=payload, headers=headers)

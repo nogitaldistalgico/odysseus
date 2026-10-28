@@ -1002,8 +1002,9 @@ async def do_generate_image(content: str, session_id: Optional[str] = None, owne
                         _ibase = _iep.base_url.rstrip("/")
                         if not _ibase.endswith("/v1"):
                             _ibase += "/v1"
+                        _ihdrs = {"Authorization": f"Bearer {_iep.api_key}"} if _iep.api_key else {}
                         try:
-                            _r = _req.get(_ibase + "/models", timeout=3)
+                            _r = _req.get(_ibase + "/models", headers=_ihdrs, timeout=3)
                             _r.raise_for_status()
                             _data = _r.json()
                             _ditems = _data if isinstance(_data, list) else (_data.get("data") or [])

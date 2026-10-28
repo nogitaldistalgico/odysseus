@@ -7,12 +7,15 @@ settings never reached the Studio. Now:
 * every enabled image endpoint the caller may see contributes
   "local/<endpoint_id>/<model>" entries at the front of the photo list, per
   request and never written into the OpenRouter cache — also when OpenRouter
-  is down or has no key;
+  is down or has no key. max_image_references / supports_seed come from the
+  endpoint's own GET /models, asked with its bearer key;
 * a local id is generated on that endpoint's /v1/images/generations with no
-  OpenRouter key, a long read timeout and the endpoint's own bearer key.
+  OpenRouter key, a long read timeout and the endpoint's own bearer key, with
+  reference and character images as base64 input_references like OpenRouter.
 
 The handlers are called directly against an in-memory SQLite database, so the
-owner/enabled/model_type filtering is the real query.
+owner/enabled/model_type filtering is the real query. No test touches the
+network: every httpx client is faked.
 """
 import asyncio
 import base64
@@ -24,8 +27,9 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import routes.studio.studio_helpers as sh
 import routes.studio.studio_routes as sr
-from core.database import Base, ModelEndpoint, StudioMedia
+from core.database import Base, ModelEndpoint, StudioCharacter, StudioMedia
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 LOCAL_ID = "local/img1/flux3-klein"
@@ -34,7 +38,9 @@ LOCAL_ID = "local/img1/flux3-klein"
 @pytest.fixture
 def db_session(monkeypatch, tmp_path):
     engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(bind=engine, tables=[ModelEndpoint.__table__, StudioMedia.__table__])
+    Base.metadata.create_all(bind=engine, tables=[
+        ModelEndpoint.__table__, StudioMedia.__table__, StudioCharacter.__table__,
+    ])
     Session = sessionmaker(bind=engine)
     db = Session()
     db.add_all([
@@ -52,11 +58,33 @@ def db_session(monkeypatch, tmp_path):
     db.close()
     monkeypatch.setattr(sr, "SessionLocal", Session)
     monkeypatch.setattr(sr, "STUDIO_MEDIA_DIR", str(tmp_path))
+    monkeypatch.setattr(sh, "_local_caps_cache", {})
     return Session
 
 
 def _request(user="alice"):
     return SimpleNamespace(state=SimpleNamespace(current_user=user))
+
+
+class _CapsClient:
+    """Fake for the capability lookup: GET <base>/models."""
+    calls = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url, headers=None):
+        _CapsClient.calls.append((url, headers))
+        return httpx.Response(200, request=httpx.Request("GET", url), json={"object": "list", "data": [
+            {"id": "flux3-klein", "max_image_references": 10, "supports_seed": True},
+            {"id": "flux2-klein-4b", "max_image_references": 4, "supports_seed": False},
+        ]})
 
 
 def test_models_prepends_visible_local_image_models_without_caching(db_session, monkeypatch):
@@ -66,22 +94,41 @@ def test_models_prepends_visible_local_image_models_without_caching(db_session, 
         return cached
 
     monkeypatch.setattr(sr, "_openrouter_studio_models", _openrouter)
+    monkeypatch.setattr(httpx, "AsyncClient", _CapsClient)
+    monkeypatch.setattr(_CapsClient, "calls", [])
 
     result = asyncio.run(sr.get_studio_models(_request()))
 
     assert [m["id"] for m in result["photo"]] == [
         "local/img1/flux3-klein", "local/img1/flux2-klein-4b", "openai/gpt-image-1",
     ]
-    assert result["photo"][0] == {
-        "id": "local/img1/flux3-klein",
-        "name": "flux3-klein (lokal)",
-        "supports_character_reference": False,
-        "max_image_references": 0,
-        "supports_seed": True,
-        "pricing": {},
-    }
+    assert result["photo"][:2] == [
+        {
+            "id": "local/img1/flux3-klein",
+            "name": "flux3-klein (lokal)",
+            "supports_character_reference": True,
+            "max_image_references": 10,
+            "supports_seed": True,
+            "pricing": {},
+        },
+        {
+            "id": "local/img1/flux2-klein-4b",
+            "name": "flux2-klein-4b (lokal)",
+            "supports_character_reference": True,
+            "max_image_references": 4,
+            "supports_seed": False,
+            "pricing": {},
+        },
+    ]
+    # Only the visible endpoint is asked, with its key.
+    assert _CapsClient.calls == [
+        ("http://192.168.40.142:11440/v1/models", {"Authorization": "Bearer sk-local"}),
+    ]
     assert result["video"] == cached["video"]
     assert cached["photo"] == [{"id": "openai/gpt-image-1"}]  # cache untouched
+
+    asyncio.run(sr.get_studio_models(_request()))
+    assert len(_CapsClient.calls) == 1  # capabilities briefly cached
 
 
 def test_models_lists_local_models_when_openrouter_is_down(db_session, monkeypatch):
@@ -106,6 +153,10 @@ def test_models_lists_local_models_when_openrouter_is_down(db_session, monkeypat
 
     ids = [m["id"] for m in result["photo"]]
     assert ids[:2] == ["local/img1/flux3-klein", "local/img1/flux2-klein-4b"]
+    # Capabilities unknown (endpoint down too): no references, seed allowed.
+    assert result["photo"][0]["max_image_references"] == 0
+    assert result["photo"][0]["supports_character_reference"] is False
+    assert result["photo"][0]["supports_seed"] is True
     assert ids[2:] == [m["id"] for m in sr._STUDIO_MODELS_FALLBACK["photo"]]
     assert sr._studio_models_cache is None
 
@@ -167,7 +218,7 @@ def test_generate_photo_goes_to_local_endpoint(db_session, monkeypatch, tmp_path
         "response_format": "b64_json", "size": "1024x768", "seed": 7, "steps": 4,
     }
     assert captured["headers"] == {"Authorization": "Bearer sk-local"}
-    assert captured["timeout"].read >= 900
+    assert captured["timeout"].read >= 1800
 
     assert media["model"] == LOCAL_ID
     assert media["filename"].endswith(".png")
@@ -209,17 +260,34 @@ def test_generate_photo_local_rejects_non_image_bytes(db_session, monkeypatch, t
     assert list(tmp_path.iterdir()) == []
 
 
-def test_generate_photo_local_rejects_references(db_session, monkeypatch):
+def test_generate_photo_local_sends_references_and_characters(db_session, monkeypatch, tmp_path):
+    from PIL import Image
+
+    chars_dir = tmp_path / "chars"
+    (chars_dir / "c1").mkdir(parents=True)
+    Image.new("RGB", (8, 8), "red").save(chars_dir / "c1" / "face.png")
+    monkeypatch.setattr(sr, "STUDIO_CHARACTERS_DIR", str(chars_dir))
+    db = db_session()
+    db.add(StudioCharacter(id="c1", owner_id="alice", name="Mira", images_json='["face.png"]'))
+    db.commit()
+    db.close()
+    monkeypatch.setattr(sr, "_get_preprocessed_base64_data_url",
+                        lambda file_id, constraints, owner=None: f"data:image/png;base64,{file_id}")
+
     captured = {}
     _patch_local_client(monkeypatch, captured)
-    req = sr.PhotoGenRequest(prompt="x", model=LOCAL_ID, character_ids=["c1"])
+    req = sr.PhotoGenRequest(prompt="Mira on a beach", model=LOCAL_ID,
+                             media_references=[{"id": "scene1"}], character_ids=["c1"])
 
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(sr.generate_photo(_request(), req))
+    asyncio.run(sr.generate_photo(_request(), req))
 
-    assert exc.value.status_code == 400
-    assert "reference" in exc.value.detail
-    assert "url" not in captured
+    refs = captured["json"]["input_references"]
+    assert refs[0] == {"type": "image_url", "image_url": {"url": "data:image/png;base64,scene1"}}
+    assert len(refs) == 2 and refs[1]["type"] == "image_url"
+    assert refs[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert captured["json"]["prompt"].startswith("[Person A] on a beach")
+    assert "reference images 2 to 2" in captured["json"]["prompt"]
+    assert captured["headers"] == {"Authorization": "Bearer sk-local"}
 
 
 @pytest.mark.parametrize("model", [

@@ -106,20 +106,92 @@ def _endpoint_model_ids(ep) -> list:
     return _visible_models(ep.cached_models, ep.hidden_models, ep.pinned_models)
 
 
-def local_photo_models(db, user) -> list:
-    """Studio photo entries for every local image model the user may use."""
-    entries = []
+def local_api_base(ep, user) -> tuple:
+    """``(base_url ending in /v1, auth headers)`` for a local image endpoint.
+
+    The endpoint's key goes out as a bearer token on every call to it."""
+    from src.endpoint_resolver import resolve_endpoint_runtime
+    base, api_key = resolve_endpoint_runtime(ep, owner=user)
+    base = base.rstrip("/")
+    if not base.endswith("/v1"):
+        base += "/v1"
+    return base, ({"Authorization": f"Bearer {api_key}"} if api_key else {})
+
+
+# Per-model capabilities from the endpoint's own GET /models
+# (max_image_references, supports_seed). Briefly cached so opening the Studio
+# doesn't wait on every endpoint each time; a failed lookup is cached shorter.
+LOCAL_CAPS_TTL = 300.0
+LOCAL_CAPS_ERROR_TTL = 60.0
+_local_caps_cache: Dict[tuple, tuple] = {}
+
+
+async def _local_model_capabilities(base: str, headers: dict) -> Dict[str, dict]:
+    import hashlib
+    import time
+    import httpx
+
+    key = (base, hashlib.sha256(repr(sorted(headers.items())).encode()).hexdigest())
+    hit = _local_caps_cache.get(key)
+    if hit and time.monotonic() < hit[0]:
+        return hit[1]
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{base}/models", headers=headers)
+        resp.raise_for_status()
+        caps = {
+            m["id"]: m for m in (resp.json().get("data") or [])
+            if isinstance(m, dict) and isinstance(m.get("id"), str)
+        }
+        ttl = LOCAL_CAPS_TTL
+    except Exception as e:
+        logger.warning("Local image endpoint %s: capability lookup failed: %s", base, e)
+        caps, ttl = {}, LOCAL_CAPS_ERROR_TTL
+    _local_caps_cache[key] = (time.monotonic() + ttl, caps)
+    return caps
+
+
+def _photo_entry(ep_id: str, model: str, caps: dict) -> Dict[str, Any]:
+    # Unknown capabilities mean no references (the server would reject them)
+    # but a seed, which every local diffusion server takes.
+    max_refs = caps.get("max_image_references")
+    if isinstance(max_refs, bool) or not isinstance(max_refs, int) or max_refs < 0:
+        max_refs = 0
+    seed = caps.get("supports_seed")
+    return {
+        "id": f"{LOCAL_MODEL_PREFIX}{ep_id}/{model}",
+        "name": f"{model} (lokal)",
+        "supports_character_reference": max_refs > 0,
+        "max_image_references": max_refs,
+        "supports_seed": seed if isinstance(seed, bool) else True,
+        "pricing": {},
+    }
+
+
+def local_photo_targets(db, user) -> list:
+    """``(endpoint_id, base, headers, model_ids)`` for every local image
+    endpoint the user may use. Plain values, so the DB session can close
+    before any network call."""
+    targets = []
     for ep in _visible_local_image_endpoints(db, user):
-        for model in _endpoint_model_ids(ep):
-            entries.append({
-                "id": f"{LOCAL_MODEL_PREFIX}{ep.id}/{model}",
-                "name": f"{model} (lokal)",
-                "supports_character_reference": False,
-                "max_image_references": 0,
-                "supports_seed": True,
-                "pricing": {},
-            })
-    return entries
+        models = _endpoint_model_ids(ep)
+        if models:
+            base, headers = local_api_base(ep, user)
+            targets.append((ep.id, base, headers, models))
+    return targets
+
+
+async def local_photo_models(targets: list) -> list:
+    """Studio photo entries for *targets*, with each endpoint's capabilities."""
+    import asyncio
+    all_caps = await asyncio.gather(*(
+        _local_model_capabilities(base, headers) for _, base, headers, _ in targets
+    ))
+    return [
+        _photo_entry(ep_id, model, caps.get(model) or {})
+        for (ep_id, _, _, models), caps in zip(targets, all_caps)
+        for model in models
+    ]
 
 
 def resolve_local_photo_model(db, model_id: str, user):
