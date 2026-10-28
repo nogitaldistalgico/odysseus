@@ -19,8 +19,8 @@ from src.settings import load_settings, get_user_setting
 from src.upload_limits import STUDIO_UPLOAD_MAX_BYTES, read_upload_limited
 from routes.studio.studio_helpers import (
     _owner_filter, _media_to_dict, get_openrouter_api_key, require_studio_privilege,
-    is_local_model_id, local_api_base, local_photo_models, local_photo_targets,
-    resolve_local_photo_model,
+    is_local_model_id, local_api_base, local_job_headers, local_studio_models, local_targets,
+    resolve_local_photo_model, resolve_local_video_model,
 )
 from routes.studio.studio_preprocess import (
     get_model_constraints, preprocess_reference_image, validate_payload_params,
@@ -293,26 +293,31 @@ async def get_studio_models(request: Request):
     derived from each model's ``architecture.input_modalities``.
 
     The user's local image endpoints (Settings -> Models, model_type "image")
-    are prepended to the photo list per request. They are never written into
-    the OpenRouter cache, and they show up even when OpenRouter is unreachable
-    or has no key. Their capabilities (max_image_references, supports_seed)
-    come from each endpoint's own GET /models.
+    are prepended to the photo and video lists per request. They are never
+    written into the OpenRouter cache, and they show up even when OpenRouter
+    is unreachable or has no key. Photo capabilities (max_image_references,
+    supports_seed) come from each endpoint's own GET /models, video models
+    and their constraints from its GET /videos/models.
     """
     models = await _openrouter_studio_models()
-    local = []
+    photos, videos = [], []
     try:
         db = SessionLocal()
         try:
-            targets = local_photo_targets(db, effective_user(request))
+            targets = local_targets(db, effective_user(request))
         finally:
             db.close()
-        local = await local_photo_models(targets)
+        photos, videos = await local_studio_models(targets)
     except Exception:
         logger.exception("Failed to list local image endpoints for the studio")
-    if not local:
+    if not photos and not videos:
         return models
     # A new dict: the cached OpenRouter list must stay free of local entries.
-    return {**models, "photo": local + list(models.get("photo") or [])}
+    return {
+        **models,
+        "photo": photos + list(models.get("photo") or []),
+        "video": videos + list(models.get("video") or []),
+    }
 
 
 async def _openrouter_studio_models():
@@ -513,7 +518,7 @@ async def _fetch_studio_models():
 
 
 @router.get("/api/studio/model-constraints/{model_id:path}")
-async def get_model_constraints_endpoint(model_id: str):
+async def get_model_constraints_endpoint(request: Request, model_id: str):
     """Return the generation constraints for a specific video model.
     
     The iOS client should call this when the user selects a video model,
@@ -531,8 +536,18 @@ async def get_model_constraints_endpoint(model_id: str):
     }
     ```
     """
-    # Local image models have no OpenRouter constraints; skip the lookup.
-    constraints = {} if is_local_model_id(model_id) else await get_model_constraints(model_id)
+    if is_local_model_id(model_id):
+        # Local models are described by their endpoint's /videos/models, not
+        # the OpenRouter cache; a local photo model has no video constraints.
+        db = SessionLocal()
+        try:
+            _, _, _, constraints = await resolve_local_video_model(db, model_id, effective_user(request))
+        except HTTPException:
+            constraints = {}
+        finally:
+            db.close()
+    else:
+        constraints = await get_model_constraints(model_id)
     return {
         "model_id": model_id,
         "supported_resolutions": constraints.get("supported_resolutions", []),
@@ -822,10 +837,40 @@ async def _delete_studio_media(request: Request, media_id: str):
     try:
         m = _lookup_owned_media(db, media_id, user)
         m.is_active = False
+        cancel = None
+        if m.job_status == "pending" and m.media_type == "video" and is_local_model_id(m.model):
+            # Local servers render one job at a time, so a deleted job would
+            # still hold up everything queued behind it: cancel it upstream.
+            cancel = _local_cancel_request(db, m)
+            m.job_status = "failed"
+            m.error = "Cancelled."
         db.commit()
-        return {"status": "ok"}
     finally:
         db.close()
+    if cancel:
+        url, headers = cancel
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.delete(url, headers=headers)
+        except Exception as e:
+            logger.warning("Cancelling local video job %s failed: %s", media_id, e)
+    return {"status": "ok"}
+
+
+def _local_cancel_request(db, m: StudioMedia):
+    """``(url, headers)`` for DELETE <base>/videos/{id} of a local video job,
+    or None when the endpoint is gone. The upstream id is the last segment of
+    the stored polling URL."""
+    from routes.studio.studio_helpers import _split_local_id, _visible_local_image_endpoints
+    ep_id, _ = _split_local_id(m.model)
+    upstream_id = str(m.job_id or "").rstrip("/").rsplit("/", 1)[-1]
+    if not upstream_id:
+        return None
+    for ep in _visible_local_image_endpoints(db, m.owner):
+        if ep.id == ep_id:
+            base, headers = local_api_base(ep, m.owner)
+            return f"{base}/videos/{upstream_id}", headers
+    return None
 
 
 @router.delete("/api/studio/media/{media_id}")
@@ -849,6 +894,20 @@ async def delete_studio_media_legacy(request: Request, media_id: str):
 # that with reference images; the OpenRouter path's 180 s cut those off
 # mid-generation.
 LOCAL_IMAGE_TIMEOUT = httpx.Timeout(connect=30.0, read=1800.0, write=60.0, pool=30.0)
+
+
+def _vetted_local_url(base: str, url: Optional[str]) -> Optional[str]:
+    """Resolve a URL a local endpoint handed back (possibly relative) against
+    the endpoint and vet it like the gallery does; None when unusable."""
+    from urllib.parse import urljoin
+    from src.url_safety import check_outbound_url
+    if not url or not isinstance(url, str):
+        return None
+    url = urljoin(base + "/", url)
+    ok, _reason = check_outbound_url(
+        url, block_private=os.getenv("IMAGE_BLOCK_PRIVATE_IPS", "false").lower() == "true",
+    )
+    return url if ok else None
 
 
 async def _photo_references(db, req: PhotoGenRequest, user):
@@ -1203,26 +1262,43 @@ async def generate_video(request: Request, req: VideoGenRequest):
     user = require_studio_privilege(request)
     db = SessionLocal()
     try:
-        api_key = get_openrouter_api_key(db)
-        if not api_key:
-            raise HTTPException(400, "OpenRouter API key not configured. Add OpenRouter in Settings -> Models.")
-        
         settings = load_settings()
         target_model = req.model or get_user_setting("studio_openrouter_video_model", user, settings.get("studio_openrouter_video_model", ""))
         if not target_model:
             raise HTTPException(400, "No video model specified. Set a default in Settings -> Studio or pass a model.")
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": STUDIO_REFERER,
-            "X-OpenRouter-Title": "Odysseus Studio"
-        }
-        
-        # Fetch model constraints for preprocessing and validation
-        constraints = await get_model_constraints(target_model)
+        local = is_local_model_id(target_model)
+        if local:
+            # A local endpoint (model id "local/<endpoint_id>/<model>") takes
+            # the OpenRouter payload at <base>/videos with its own key. It
+            # accepts images only inline and has no reference images or
+            # characters, only first/last frames.
+            local_base, headers, upstream_model, constraints = await resolve_local_video_model(db, target_model, user)
+            references = [r for r in (req.media_references or []) if r.id and r.role == MediaReferenceRole.REFERENCE]
+            if req.character_ids or references:
+                raise HTTPException(
+                    400,
+                    "This local video model takes no reference images or characters; "
+                    "use a first or last frame instead.",
+                )
+            req.upload_method = "base64"
+            submit_url = f"{local_base}/videos"
+        else:
+            api_key = get_openrouter_api_key(db)
+            if not api_key:
+                raise HTTPException(400, "OpenRouter API key not configured. Add OpenRouter in Settings -> Models.")
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "HTTP-Referer": STUDIO_REFERER,
+                "X-OpenRouter-Title": "Odysseus Studio"
+            }
+            upstream_model = target_model
+            submit_url = "https://openrouter.ai/api/v1/videos"
+            # Fetch model constraints for preprocessing and validation
+            constraints = await get_model_constraints(target_model)
 
         payload = {
-            "model": target_model,
+            "model": upstream_model,
         }
         
         refs = []
@@ -1234,13 +1310,15 @@ async def generate_video(request: Request, req: VideoGenRequest):
                 m_id = m_id.strip()
                 if m_id:
                     url = _get_preprocessed_base64_data_url(m_id, constraints, user)
-                    # For legacy base_media_id, we always put it in refs as well
-                    refs.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": url
-                        }
-                    })
+                    # For legacy base_media_id, we always put it in refs as
+                    # well (local models take frames only).
+                    if not local:
+                        refs.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": url
+                            }
+                        })
                     if idx == 0:
                         frame_imgs.append({
                             "type": "image_url",
@@ -1334,17 +1412,27 @@ async def generate_video(request: Request, req: VideoGenRequest):
         # what the target model actually supports.
         payload = validate_payload_params(payload, constraints)
 
-        async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
-            resp = await client.post("https://openrouter.ai/api/v1/videos", json=payload, headers=headers)
+        async with httpx.AsyncClient(timeout=180, follow_redirects=not local) as client:
+            resp = await client.post(submit_url, json=payload, headers=headers)
             # OpenRouter typically returns job/polling info with 202 Accepted
             if resp.status_code not in (200, 202):
-                raise HTTPException(500, f"OpenRouter API error: {resp.status_code} {resp.text}")
+                source = "Local video endpoint" if local else "OpenRouter API"
+                raise HTTPException(502 if local else 500, f"{source} error: {resp.status_code} {resp.text[:500] if local else resp.text}")
             
             data = resp.json()
             # If it returns synchronous result (unlikely but possible)
-            url_data = data.get("data", [{}])[0].get("url")
+            first = data.get("data") if isinstance(data.get("data"), list) else []
+            url_data = first[0].get("url") if first and isinstance(first[0], dict) else None
             polling_url = data.get("polling_url")
             job_id = data.get("id")
+            if local:
+                # The finaliser polls whatever is stored here, so it must be
+                # an absolute, vetted URL; a bare id would be read as an
+                # OpenRouter generation id.
+                polling_url = _vetted_local_url(local_base, polling_url)
+                if not polling_url:
+                    raise HTTPException(502, "The local video endpoint returned no usable polling URL.")
+                url_data = None
 
             media_id = f"stv_{uuid.uuid4().hex[:12]}"
             filename = f"{media_id}.mp4"
@@ -1402,6 +1490,11 @@ async def generate_video(request: Request, req: VideoGenRequest):
 # One in-flight finalisation per media id: the request path and the background
 # loop can otherwise download and concatenate the same job twice.
 _job_locks: Dict[str, asyncio.Lock] = {}
+
+# Last queue_position a local video server reported per pending job. The
+# local servers render one job at a time, so "position 3" explains a long
+# wait; GET /api/studio/jobs passes it on while the job is pending.
+_job_queue_positions: Dict[str, int] = {}
 
 
 def _job_lock(media_id: str) -> asyncio.Lock:
@@ -1495,11 +1588,29 @@ async def finalize_video_job(media_id: str) -> bool:
                 db.commit()
                 return True
 
-            api_key = get_openrouter_api_key(db)
-            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            local = is_local_model_id(m.model)
+            if local:
+                # Never send the OpenRouter key to a local server; its own
+                # key only goes to its own host.
+                headers = local_job_headers(db, m.model, m.owner, poll_url)
+            else:
+                api_key = get_openrouter_api_key(db)
+                headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
-            async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=300, follow_redirects=not local) as client:
                 resp = await client.get(poll_url, headers=headers)
+                if local and (resp.status_code in (401, 403, 404) or 300 <= resp.status_code < 400):
+                    # Not transient for a local server: the job is gone, or
+                    # the endpoint (or its key) changed. Retrying would leave
+                    # the job pending for the finaliser's whole 48 h.
+                    m.job_status = "failed"
+                    m.error = (
+                        "The local server no longer knows this job (was it restarted?)."
+                        if resp.status_code == 404
+                        else f"The local server refused the status request ({resp.status_code}); check the endpoint and its API key."
+                    )
+                    db.commit()
+                    return True
                 if resp.status_code not in (200, 202):
                     # Transient upstream trouble: leave the job pending so the
                     # next tick retries rather than burning the generation.
@@ -1510,8 +1621,11 @@ async def finalize_video_job(media_id: str) -> bool:
 
                 data = resp.json()
                 status = data.get("status")
+                position = data.get("queue_position")
+                if isinstance(position, int) and not isinstance(position, bool):
+                    _job_queue_positions[media_id] = position
 
-                if status == "failed":
+                if status in ("failed", "cancelled", "canceled", "expired"):
                     m.job_status = "failed"
                     m.error = str(
                         data.get("error") or data.get("message") or "The provider reported a failure."
@@ -1538,8 +1652,22 @@ async def finalize_video_job(media_id: str) -> bool:
                     return True
 
                 filepath = os.path.join(STUDIO_MEDIA_DIR, m.filename)
-                req_headers = headers if "openrouter.ai" in url_data else None
+                if local:
+                    url_data = _vetted_local_url(poll_url, url_data)
+                    if not url_data:
+                        m.job_status = "failed"
+                        m.error = "The local server returned an unsafe video URL."
+                        db.commit()
+                        return True
+                    req_headers = local_job_headers(db, m.model, m.owner, url_data) or None
+                else:
+                    req_headers = headers if "openrouter.ai" in url_data else None
                 vid_resp = await client.get(url_data, headers=req_headers)
+                if local and vid_resp.status_code != 200:
+                    m.job_status = "failed"
+                    m.error = f"Downloading the finished video from the local server failed ({vid_resp.status_code})."
+                    db.commit()
+                    return True
                 vid_resp.raise_for_status()
                 with open(filepath, "wb") as f:
                     f.write(vid_resp.content)
@@ -1611,6 +1739,8 @@ async def finalize_pending_video_jobs(max_age_hours: int = 48) -> int:
         ids = [r[0] for r in rows]
     finally:
         db.close()
+    for stale in [k for k in _job_queue_positions if k not in ids]:
+        _job_queue_positions.pop(stale, None)
 
     done = 0
     for media_id in ids:
@@ -1650,7 +1780,12 @@ async def check_video_job(request: Request, media_id: str):
         m = db.query(StudioMedia).filter(StudioMedia.id == media_id).first()
         if not m:
             raise HTTPException(404, "Media not found")
-        return _media_to_dict(m)
+        result = _media_to_dict(m)
+        if m.job_status == "pending" and media_id in _job_queue_positions:
+            result["queue_position"] = _job_queue_positions[media_id]
+        else:
+            _job_queue_positions.pop(media_id, None)
+        return result
     finally:
         db.close()
 
@@ -1772,6 +1907,8 @@ async def extend_video(request: Request, req: VideoExtendRequest):
         )
         if not target_model:
             raise HTTPException(400, "No video model specified.")
+        if is_local_model_id(target_model):
+            raise HTTPException(400, "Local video models can't extend or edit videos; pick an OpenRouter model.")
 
         constraints = await get_model_constraints(target_model)
 
@@ -1994,6 +2131,8 @@ async def edit_video(request: Request, req: VideoEditRequest):
         )
         if not target_model:
             raise HTTPException(400, "No video model specified.")
+        if is_local_model_id(target_model):
+            raise HTTPException(400, "Local video models can't extend or edit videos; pick an OpenRouter model.")
 
         constraints = await get_model_constraints(target_model)
 

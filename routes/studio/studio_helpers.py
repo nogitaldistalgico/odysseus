@@ -118,26 +118,29 @@ def local_api_base(ep, user) -> tuple:
     return base, ({"Authorization": f"Bearer {api_key}"} if api_key else {})
 
 
-# Per-model capabilities from the endpoint's own GET /models
-# (max_image_references, supports_seed). Briefly cached so opening the Studio
-# doesn't wait on every endpoint each time; a failed lookup is cached shorter.
+# The endpoint's own catalogues: GET /models (photo capabilities such as
+# max_image_references and supports_seed) and GET /videos/models (video
+# models with OpenRouter-shaped constraints). Briefly cached so opening the
+# Studio doesn't wait on every endpoint each time; a failed lookup is cached
+# shorter. Keyed by base, path and a hash of the auth headers.
 LOCAL_CAPS_TTL = 300.0
 LOCAL_CAPS_ERROR_TTL = 60.0
 _local_caps_cache: Dict[tuple, tuple] = {}
 
 
-async def _local_model_capabilities(base: str, headers: dict) -> Dict[str, dict]:
+async def _local_catalog(base: str, headers: dict, path: str = "/models") -> Dict[str, dict]:
+    """``{model_id: entry}`` from ``<base><path>``; empty when unreachable."""
     import hashlib
     import time
     import httpx
 
-    key = (base, hashlib.sha256(repr(sorted(headers.items())).encode()).hexdigest())
+    key = (base, path, hashlib.sha256(repr(sorted(headers.items())).encode()).hexdigest())
     hit = _local_caps_cache.get(key)
     if hit and time.monotonic() < hit[0]:
         return hit[1]
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{base}/models", headers=headers)
+            resp = await client.get(f"{base}{path}", headers=headers)
         resp.raise_for_status()
         caps = {
             m["id"]: m for m in (resp.json().get("data") or [])
@@ -145,10 +148,20 @@ async def _local_model_capabilities(base: str, headers: dict) -> Dict[str, dict]
         }
         ttl = LOCAL_CAPS_TTL
     except Exception as e:
-        logger.warning("Local image endpoint %s: capability lookup failed: %s", base, e)
+        logger.warning("Local image endpoint %s: %s lookup failed: %s", base, path, e)
         caps, ttl = {}, LOCAL_CAPS_ERROR_TTL
     _local_caps_cache[key] = (time.monotonic() + ttl, caps)
     return caps
+
+
+def _local_id(ep_id: str, model: str) -> str:
+    return f"{LOCAL_MODEL_PREFIX}{ep_id}/{model}"
+
+
+def _split_local_id(model_id: str) -> tuple:
+    _, _, rest = model_id.partition(LOCAL_MODEL_PREFIX)
+    ep_id, _, model = rest.partition("/")
+    return ep_id, model
 
 
 def _photo_entry(ep_id: str, model: str, caps: dict) -> Dict[str, Any]:
@@ -159,7 +172,7 @@ def _photo_entry(ep_id: str, model: str, caps: dict) -> Dict[str, Any]:
         max_refs = 0
     seed = caps.get("supports_seed")
     return {
-        "id": f"{LOCAL_MODEL_PREFIX}{ep_id}/{model}",
+        "id": _local_id(ep_id, model),
         "name": f"{model} (lokal)",
         "supports_character_reference": max_refs > 0,
         "max_image_references": max_refs,
@@ -168,30 +181,95 @@ def _photo_entry(ep_id: str, model: str, caps: dict) -> Dict[str, Any]:
     }
 
 
-def local_photo_targets(db, user) -> list:
-    """``(endpoint_id, base, headers, model_ids)`` for every local image
+def local_video_constraints(m: dict) -> Dict[str, Any]:
+    """The constraint dict get_model_constraints would give for an OpenRouter
+    video model, built from one entry of the endpoint's /videos/models. The
+    local servers neither continue nor edit videos, so the continuation and
+    editing parameters are never listed."""
+    def _list(key):
+        value = m.get(key)
+        return value if isinstance(value, list) else []
+
+    return {
+        "supported_resolutions": _list("supported_resolutions"),
+        "supported_aspect_ratios": _list("supported_aspect_ratios"),
+        "supported_sizes": _list("supported_sizes"),
+        "supported_durations": _list("supported_durations"),
+        "supported_frame_images": m.get("supported_frame_images") if isinstance(m.get("supported_frame_images"), list) else None,
+        "generate_audio": m.get("generate_audio") is True,
+        "seed": m.get("seed") is True,
+        "pricing_skus": {},
+        "description": str(m.get("description") or ""),
+        "supported_parameters": [],
+        "allowed_passthrough_parameters": [],
+    }
+
+
+def _video_entry(ep_id: str, m: dict) -> Dict[str, Any]:
+    # Same shape as the OpenRouter video entries in get_studio_models.
+    c = local_video_constraints(m)
+    frames = c["supported_frame_images"]
+    entry = {
+        "id": _local_id(ep_id, m["id"]),
+        "name": f"{m['id']} (lokal)",
+        "supported_resolutions": c["supported_resolutions"],
+        "supported_aspect_ratios": c["supported_aspect_ratios"],
+        "supported_sizes": c["supported_sizes"],
+        "supported_durations": c["supported_durations"],
+        "supports_audio": c["generate_audio"],
+        "supports_seed": c["seed"],
+        "supports_continuation": False,
+        "supports_video_editing": False,
+        "pricing": {},
+        "supports_frame_images": None if frames is None else bool(frames),
+        "supports_character_reference": False,
+        "max_image_references": 0,
+    }
+    if frames is not None:
+        entry["supported_frame_images"] = frames
+    return entry
+
+
+def local_targets(db, user) -> list:
+    """``(endpoint_id, base, headers, photo_model_ids)`` for every local image
     endpoint the user may use. Plain values, so the DB session can close
     before any network call."""
     targets = []
     for ep in _visible_local_image_endpoints(db, user):
-        models = _endpoint_model_ids(ep)
-        if models:
-            base, headers = local_api_base(ep, user)
-            targets.append((ep.id, base, headers, models))
+        base, headers = local_api_base(ep, user)
+        targets.append((ep.id, base, headers, _endpoint_model_ids(ep)))
     return targets
 
 
-async def local_photo_models(targets: list) -> list:
-    """Studio photo entries for *targets*, with each endpoint's capabilities."""
+async def local_studio_models(targets: list) -> tuple:
+    """``(photo_entries, video_entries)`` for *targets*: photo models from the
+    endpoint's model list with the capabilities of its GET /models, video
+    models from its GET /videos/models."""
     import asyncio
-    all_caps = await asyncio.gather(*(
-        _local_model_capabilities(base, headers) for _, base, headers, _ in targets
-    ))
-    return [
+
+    async def _none():
+        return {}
+
+    photo_caps, video_cats = await asyncio.gather(
+        asyncio.gather(*(
+            _local_catalog(base, headers) if models else _none()
+            for _, base, headers, models in targets
+        )),
+        asyncio.gather(*(
+            _local_catalog(base, headers, "/videos/models") for _, base, headers, _ in targets
+        )),
+    )
+    photos = [
         _photo_entry(ep_id, model, caps.get(model) or {})
-        for (ep_id, _, _, models), caps in zip(targets, all_caps)
+        for (ep_id, _, _, models), caps in zip(targets, photo_caps)
         for model in models
     ]
+    videos = [
+        _video_entry(ep_id, m)
+        for (ep_id, _, _, _), catalog in zip(targets, video_cats)
+        for m in catalog.values()
+    ]
+    return photos, videos
 
 
 def resolve_local_photo_model(db, model_id: str, user):
@@ -200,13 +278,44 @@ def resolve_local_photo_model(db, model_id: str, user):
     Raises 400 when the endpoint is not visible to *user* (or disabled, or not
     an image endpoint) or no longer offers the model.
     """
-    _, _, rest = model_id.partition(LOCAL_MODEL_PREFIX)
-    ep_id, _, model = rest.partition("/")
+    ep_id, model = _split_local_id(model_id)
     if ep_id and model:
         for ep in _visible_local_image_endpoints(db, user):
             if ep.id == ep_id and model in _endpoint_model_ids(ep):
                 return ep, model
     raise HTTPException(400, f"Local image model '{model_id}' is not available. Check Settings -> Models.")
+
+
+async def resolve_local_video_model(db, model_id: str, user) -> tuple:
+    """Map a local video id to ``(base, headers, model, constraints)``.
+
+    Raises 400 when the endpoint is not visible to *user* or its
+    /videos/models does not (or, unreachable, cannot) list the model.
+    """
+    ep_id, model = _split_local_id(model_id)
+    if ep_id and model:
+        for ep in _visible_local_image_endpoints(db, user):
+            if ep.id == ep_id:
+                base, headers = local_api_base(ep, user)
+                entry = (await _local_catalog(base, headers, "/videos/models")).get(model)
+                if entry is not None:
+                    return base, headers, model, local_video_constraints(entry)
+    raise HTTPException(400, f"Local video model '{model_id}' is not available. Check Settings -> Models and that the server is reachable.")
+
+
+def local_job_headers(db, model_id: str, owner, url: str) -> dict:
+    """The endpoint key for a request to *url* on behalf of a local job, but
+    only when *url* is on the endpoint itself (same scheme and host);
+    otherwise, or when the endpoint is gone, no auth at all."""
+    from urllib.parse import urlsplit
+    ep_id, _ = _split_local_id(model_id)
+    for ep in _visible_local_image_endpoints(db, owner):
+        if ep.id == ep_id:
+            base, headers = local_api_base(ep, owner)
+            target, origin = urlsplit(url), urlsplit(base)
+            if (target.scheme, target.netloc) == (origin.scheme, origin.netloc):
+                return headers
+    return {}
 
 
 def get_openrouter_api_key(db) -> Optional[str]:

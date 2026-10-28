@@ -238,7 +238,13 @@ async function _pollOnce() {
         continue;
       }
       if (!media) continue;
-      if (media.job_status === 'pending') { store.jobs.set(id, media); continue; }
+      if (media.job_status === 'pending') {
+        const before = store.jobs.get(id);
+        store.jobs.set(id, media);
+        // Local jobs report their queue position; redraw when it moves.
+        if ((before && before.queue_position) !== media.queue_position) upsertLibrary(media);
+        continue;
+      }
       store.jobs.delete(id);
       upsertLibrary(media);
       emit('job-done', { media });

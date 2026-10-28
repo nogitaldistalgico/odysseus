@@ -926,6 +926,15 @@ export function createComposer(root, ctx) {
     if (items.some(m => m.job_status === 'pending')) startElapsed(); else stopElapsed();
   }
 
+  /** Local models render one job at a time, images and videos in one queue,
+   *  so a long wait needs explaining; the server reports the queue position. */
+  function localQueueHint(m, isVideo) {
+    if (!String(m.model || '').startsWith('local/')) return '';
+    const pos = Number.isInteger(m.queue_position) && m.queue_position > 0
+      ? ` Waiting in queue (position ${m.queue_position}).` : '';
+    return `<div class="st-hint">Local model: jobs run one at a time, images and videos share the queue${isVideo ? ' — a clip takes 10–30 minutes' : ''}.${pos}</div>`;
+  }
+
   function stageMainHtml(m) {
     const pending = m.job_status === 'pending';
     const failed = m.job_status === 'failed';
@@ -935,7 +944,8 @@ export function createComposer(root, ctx) {
       media = `<div class="st-stage-pending"><div class="st-whirl" id="st-stage-whirl"></div>
         <div class="st-stage-pending-title">${isVideo ? 'Rendering video' : 'Generating photo'}</div>
         <div class="st-stage-pending-sub">${esc(m.model || '')} · <span class="st-elapsed" data-start="${m._startedAt || parseServerDate(m.created_at) || Date.now()}">0s</span></div>
-        ${!m._local ? '<div class="st-hint">The job is finished on the server even if you close this window.</div>' : ''}</div>`;
+        ${!m._local ? '<div class="st-hint">The job is finished on the server even if you close this window.</div>' : ''}
+        ${localQueueHint(m, isVideo)}</div>`;
     } else if (failed) {
       media = `<div class="st-stage-failed"><div class="st-stage-failed-title">Generation failed</div><div class="st-stage-failed-text">${esc(m.error || 'The provider reported a failure.')}</div>
         ${m._retry ? '<button type="button" class="st-btn st-btn-ghost" id="st-stage-retry">Try again</button>' : ''}</div>`;

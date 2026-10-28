@@ -15,7 +15,11 @@ settings never reached the Studio. Now:
 * that generation is a job: generate/photo answers at once with job_status
   "pending", the image arrives in the background and GET /api/studio/jobs
   reports completed/failed. An identical resubmission gets the running job,
-  and a pending photo a restart cut off is failed instead of hanging forever.
+  and a pending photo a restart cut off is failed instead of hanging forever;
+* video models from the endpoint's GET /videos/models join the video list,
+  generate/video posts the OpenRouter payload to <base>/videos with the
+  endpoint key, and the existing finaliser completes the job through the
+  stored polling_url without ever sending the OpenRouter key there.
 
 The handlers are called directly against an in-memory SQLite database, so the
 owner/enabled/model_type filtering is the real query. No test touches the
@@ -86,10 +90,20 @@ class _CapsClient:
 
     async def get(self, url, headers=None):
         _CapsClient.calls.append((url, headers))
-        return httpx.Response(200, request=httpx.Request("GET", url), json={"object": "list", "data": [
+        data = VIDEO_CATALOG if url.endswith("/videos/models") else [
             {"id": "flux3-klein", "max_image_references": 10, "supports_seed": True},
             {"id": "flux2-klein-4b", "max_image_references": 4, "supports_seed": False},
-        ]})
+        ]
+        return httpx.Response(200, request=httpx.Request("GET", url), json={"object": "list", "data": data})
+
+
+VIDEO_CATALOG = [{
+    "id": "ltx-2.3", "name": "LTX-2.3",
+    "supported_resolutions": ["360p", "480p"], "supported_aspect_ratios": ["16:9", "9:16", "1:1"],
+    "supported_sizes": ["640x360", "360x640"], "supported_durations": [2, 3, 4, 5],
+    "supported_frame_images": ["first_frame", "last_frame"],
+    "generate_audio": True, "seed": True, "pricing_skus": {},
+}]
 
 
 def test_models_prepends_visible_local_image_models_without_caching(db_session, monkeypatch):
@@ -126,14 +140,33 @@ def test_models_prepends_visible_local_image_models_without_caching(db_session, 
         },
     ]
     # Only the visible endpoint is asked, with its key.
-    assert _CapsClient.calls == [
+    assert sorted(_CapsClient.calls) == [
         ("http://192.168.40.142:11440/v1/models", {"Authorization": "Bearer sk-local"}),
+        ("http://192.168.40.142:11440/v1/videos/models", {"Authorization": "Bearer sk-local"}),
     ]
-    assert result["video"] == cached["video"]
+    assert [m["id"] for m in result["video"]] == ["local/img1/ltx-2.3", "google/veo-3.1"]
+    assert result["video"][0] == {
+        "id": "local/img1/ltx-2.3",
+        "name": "ltx-2.3 (lokal)",
+        "supported_resolutions": ["360p", "480p"],
+        "supported_aspect_ratios": ["16:9", "9:16", "1:1"],
+        "supported_sizes": ["640x360", "360x640"],
+        "supported_durations": [2, 3, 4, 5],
+        "supported_frame_images": ["first_frame", "last_frame"],
+        "supports_audio": True,
+        "supports_seed": True,
+        "supports_continuation": False,
+        "supports_video_editing": False,
+        "pricing": {},
+        "supports_frame_images": True,
+        "supports_character_reference": False,
+        "max_image_references": 0,
+    }
     assert cached["photo"] == [{"id": "openai/gpt-image-1"}]  # cache untouched
+    assert cached["video"] == [{"id": "google/veo-3.1"}]
 
     asyncio.run(sr.get_studio_models(_request()))
-    assert len(_CapsClient.calls) == 1  # capabilities briefly cached
+    assert len(_CapsClient.calls) == 2  # catalogues briefly cached
 
 
 def test_models_lists_local_models_when_openrouter_is_down(db_session, monkeypatch):
@@ -340,7 +373,12 @@ def test_constraints_and_cost_are_empty_for_local_ids(monkeypatch):
     monkeypatch.setattr(sr, "get_model_constraints", _no_lookup)
     monkeypatch.setattr(sr, "require_studio_privilege", lambda request: "alice")
 
-    constraints = asyncio.run(sr.get_model_constraints_endpoint(LOCAL_ID))
+    monkeypatch.setattr(sr, "SessionLocal", lambda: SimpleNamespace(close=lambda: None))
+    async def _no_video_model(db, model_id, user):
+        raise HTTPException(400, "not a video model")
+    monkeypatch.setattr(sr, "resolve_local_video_model", _no_video_model)
+
+    constraints = asyncio.run(sr.get_model_constraints_endpoint(_request(), LOCAL_ID))
     assert constraints["supported_sizes"] == []
     assert constraints["supports_character_reference"] is False
 
@@ -411,3 +449,196 @@ def test_pending_photo_without_a_task_is_failed_not_stuck(db_session, monkeypatc
         db.close()
     # Photos never go to the OpenRouter video finaliser; videos still do.
     assert finalised == ["v1"]
+
+
+# ---------------------------------------------------------------------------
+# Local video (same endpoint, OpenRouter-shaped /videos API)
+# ---------------------------------------------------------------------------
+VIDEO_ID = "local/img1/ltx-2.3"
+POLL_URL = "http://192.168.40.142:11440/v1/videos/vid_1"
+MP4_URL = "http://192.168.40.142:11440/v1/videos/vid_1/content.mp4"
+
+
+def _patch_video_client(monkeypatch, captured, poll_answers=()):
+    """Fake local server: /videos/models, POST /videos, the polling URL, the
+    mp4 and DELETE. Every call is recorded as (method, url, headers[, json])."""
+    answers = list(poll_answers)
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, headers=None):
+            captured.setdefault("calls", []).append(("GET", url, headers))
+            req = httpx.Request("GET", url)
+            if url.endswith("/videos/models"):
+                return httpx.Response(200, request=req, json={"data": VIDEO_CATALOG})
+            if url == POLL_URL:
+                return httpx.Response(200, request=req, json=answers.pop(0))
+            if url == MP4_URL:
+                return httpx.Response(200, request=req, content=b"mp4-bytes")
+            return httpx.Response(404, request=req)
+
+        async def post(self, url, json=None, headers=None):
+            captured.setdefault("calls", []).append(("POST", url, headers, json))
+            return httpx.Response(202, request=httpx.Request("POST", url),
+                                  json={"id": "vid_1", "polling_url": POLL_URL, "status": "pending"})
+
+        async def delete(self, url, headers=None):
+            captured.setdefault("calls", []).append(("DELETE", url, headers))
+            return httpx.Response(200, request=httpx.Request("DELETE", url))
+
+    def _no_openrouter(db):
+        raise AssertionError("a local video model must not touch the OpenRouter key")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(sr, "require_studio_privilege", lambda request: "alice")
+    monkeypatch.setattr(sr, "get_openrouter_api_key", _no_openrouter)
+    monkeypatch.setattr(sr, "load_settings", lambda: {})
+    monkeypatch.setattr(sr, "get_user_setting", lambda key, user, default=None: default)
+    monkeypatch.setattr(sr, "is_ffmpeg_available", lambda: False)
+    monkeypatch.setattr("src.url_safety.check_outbound_url", lambda u, **kw: (True, ""))
+    monkeypatch.setattr(sr, "_get_preprocessed_base64_data_url",
+                        lambda file_id, constraints, owner=None: f"data:image/png;base64,{file_id}")
+
+
+KEY = {"Authorization": "Bearer sk-local"}
+
+
+def test_generate_video_posts_to_local_endpoint(db_session, monkeypatch):
+    captured = {}
+    _patch_video_client(monkeypatch, captured)
+    req = sr.VideoGenRequest(
+        prompt="waves at dusk", model=VIDEO_ID, duration=4, resolution="480p", aspect_ratio="16:9",
+        generate_audio=True, media_references=[{"id": "f1", "role": "first_frame"}], upload_method="s3",
+    )
+
+    media = asyncio.run(sr.generate_video(_request(), req))
+
+    posts = [c for c in captured["calls"] if c[0] == "POST"]
+    assert len(posts) == 1
+    _, url, headers, payload = posts[0]
+    assert url == "http://192.168.40.142:11440/v1/videos"
+    assert headers == KEY
+    assert payload == {
+        "model": "ltx-2.3", "prompt": "waves at dusk",
+        "frame_images": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,f1"},
+                          "frame_type": "first_frame"}],
+        "duration": 4, "resolution": "480p", "aspect_ratio": "16:9", "generate_audio": True,
+    }
+    assert media["job_status"] == "pending"
+    assert media["model"] == VIDEO_ID
+    db = db_session()
+    try:
+        assert db.get(StudioMedia, media["id"]).job_id == POLL_URL
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("extra", [
+    {"character_ids": ["c1"]},
+    {"media_references": [{"id": "r1", "role": "reference"}]},
+])
+def test_generate_video_local_rejects_references(db_session, monkeypatch, extra):
+    captured = {}
+    _patch_video_client(monkeypatch, captured)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(sr.generate_video(_request(), sr.VideoGenRequest(prompt="x", model=VIDEO_ID, **extra)))
+
+    assert exc.value.status_code == 400
+    assert not [c for c in captured["calls"] if c[0] == "POST"]
+
+
+def _pending_local_video(db_session, media_id="stv_local1"):
+    db = db_session()
+    db.add(StudioMedia(id=media_id, filename=f"{media_id}.mp4", media_type="video", owner="alice",
+                       model=VIDEO_ID, job_id=POLL_URL, job_status="pending"))
+    db.commit()
+    db.close()
+    return media_id
+
+
+def test_polling_the_stored_url_completes_a_local_video(db_session, monkeypatch, tmp_path):
+    captured = {}
+    _patch_video_client(monkeypatch, captured, poll_answers=[
+        {"status": "in_progress", "queue_position": 2},
+        {"status": "completed", "unsigned_urls": [MP4_URL]},
+    ])
+    media_id = _pending_local_video(db_session)
+
+    first = asyncio.run(sr.check_video_job(_request(), media_id))
+    assert first["job_status"] == "pending"
+    assert first["queue_position"] == 2
+
+    done = asyncio.run(sr.check_video_job(_request(), media_id))
+    assert done["job_status"] == "completed"
+    assert "queue_position" not in done
+    assert (tmp_path / f"{media_id}.mp4").read_bytes() == b"mp4-bytes"
+    # Polled at the stored URL and downloaded, with the endpoint's own key
+    # (same host) and never the OpenRouter key.
+    assert [c[:3] for c in captured["calls"]] == [
+        ("GET", POLL_URL, KEY), ("GET", POLL_URL, KEY), ("GET", MP4_URL, KEY),
+    ]
+
+
+def test_local_video_failure_carries_the_server_error(db_session, monkeypatch):
+    _patch_video_client(monkeypatch, {}, poll_answers=[{"status": "failed", "error": "out of memory"}])
+    media_id = _pending_local_video(db_session)
+
+    media = asyncio.run(sr.check_video_job(_request(), media_id))
+
+    assert media["job_status"] == "failed"
+    assert media["error"] == "out of memory"
+
+
+def test_deleting_a_pending_local_video_cancels_it_upstream(db_session, monkeypatch):
+    captured = {}
+    _patch_video_client(monkeypatch, captured)
+    media_id = _pending_local_video(db_session)
+
+    asyncio.run(sr._delete_studio_media(_request(), media_id))
+
+    assert ("DELETE", "http://192.168.40.142:11440/v1/videos/vid_1", KEY) in captured["calls"]
+    db = db_session()
+    try:
+        m = db.get(StudioMedia, media_id)
+        assert (m.is_active, m.job_status) == (False, "failed")
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("answer", [
+    {"status": "cancelled"},
+    {"status": "completed", "unsigned_urls": ["http://192.168.40.142:11440/v1/videos/gone.mp4"]},
+])
+def test_local_video_terminal_states_never_stay_pending(db_session, monkeypatch, answer):
+    _patch_video_client(monkeypatch, {}, poll_answers=[answer])
+    media_id = _pending_local_video(db_session)
+
+    media = asyncio.run(sr.check_video_job(_request(), media_id))
+
+    assert media["job_status"] == "failed"
+    assert media["error"]
+
+
+@pytest.mark.parametrize("code", [401, 403, 404, 307])
+def test_local_video_refused_status_request_fails_the_job(db_session, monkeypatch, code):
+    _patch_video_client(monkeypatch, {})
+
+    class _Refusing(httpx.AsyncClient):  # the patched fake
+        async def get(self, url, headers=None):
+            return httpx.Response(code, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Refusing)
+    media_id = _pending_local_video(db_session)
+
+    media = asyncio.run(sr.check_video_job(_request(), media_id))
+
+    assert media["job_status"] == "failed"
