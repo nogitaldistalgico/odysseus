@@ -45,7 +45,9 @@ def test_coach_files_resolve_inside_the_bound_workspace():
 
 
 def test_coach_workspace_cannot_climb_back_into_app_state():
-    with pytest.raises(ValueError, match="application state"):
+    # Upstream's workspace confinement now refuses the climb before the
+    # application-state check runs; either refusal keeps the state file out.
+    with pytest.raises(ValueError, match="application state|outside the workspace"):
         _resolve_tool_path_in_workspace(_coach_workspace(), "../../../sessions.json")
 
 
