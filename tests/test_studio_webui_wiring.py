@@ -21,7 +21,8 @@ def test_index_html_has_sidebar_and_rail_launchers():
     assert 'id="tool-studio-btn"' in html
     assert 'id="rail-studio"' in html
     assert 'id="studio-status-dot"' in html
-    assert '<link rel="stylesheet" href="/static/css/studio.css">' in html
+    # The app cascade shares one ?v= cache-bust token (tests/helpers/stylesheets.py).
+    assert re.search(r'<link rel="stylesheet" href="/static/css/studio\.css(\?v=[^"]+)?">', html)
     assert 'data-ui-key="tool-studio"' in html
     assert "'/studio': 'Studio — Odysseus'" in html
 
