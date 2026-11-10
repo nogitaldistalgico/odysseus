@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from typing import Optional, Dict, List, Tuple
 from src.model_context import get_context_length, DEFAULT_CONTEXT, is_local_endpoint
 from src.model_profiles import is_odysseus_merged_tools_model
-from src.passthrough import apply_passthrough_chat_header
+from src.passthrough import apply_passthrough_chat_header, is_passthrough_model
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -3910,11 +3910,15 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
         # in full, while a stale KV slot cannot poison the retry.  Limit this
         # to a silent first-event timeout; never replay a stream after output
         # has already reached the caller.
+        # Fork: never replay to a passthrough model (src/passthrough.py). The
+        # agent behind it may still be working on the first request, so a
+        # replay would run its side effects twice, and without the chat id.
         if (
             _retry_silent_local
             and not locals().get("stream_received_event", True)
             and locals().get("first_token_budget", 0) > 0
             and _is_managed_stream_endpoint(target_url)
+            and not is_passthrough_model(model)
         ):
             logger.warning(
                 "Local stream emitted no first event; retrying once without cache affinity: %s",

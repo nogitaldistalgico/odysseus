@@ -714,6 +714,58 @@ def test_stream_without_session_has_no_chat_header(monkeypatch, hugo_patterns):
     assert "X-Odysseus-Chat" not in headers
 
 
+class _SilentStreamResp(_FakeStreamResp):
+    async def aiter_lines(self):
+        import httpx
+        raise httpx.ReadTimeout("no first event")
+        yield  # pragma: no cover - makes this an async generator
+
+
+class _SilentStreamCtx(_FakeStreamCtx):
+    async def __aenter__(self):
+        self._captured.append(dict(self._headers or {}))
+        return _SilentStreamResp()
+
+
+class _SilentStreamClient(_FakeStreamClient):
+    def stream(self, method, url, json=None, headers=None, **kwargs):
+        return _SilentStreamCtx(self._captured, headers)
+
+
+def _silent_stream_requests(monkeypatch, model):
+    captured = []
+    monkeypatch.setattr(llm_core, "_get_http_client", lambda: _SilentStreamClient(captured))
+    monkeypatch.setattr(llm_core, "_is_host_dead", lambda url: False)
+    monkeypatch.setattr(llm_core, "note_model_activity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(llm_core, "_clear_host_dead", lambda *args, **kwargs: None)
+    chunks = []
+
+    async def drain():
+        async for chunk in llm_core.stream_llm(
+            HUGO_URL, model, [{"role": "user", "content": "Mach das Licht an"}],
+            headers={"Authorization": "Bearer odysseus-alice"}, session_id="chat-7",
+        ):
+            chunks.append(chunk)
+
+    asyncio.run(drain())
+    return captured, chunks
+
+
+def test_silent_passthrough_stream_is_never_replayed(monkeypatch, hugo_patterns):
+    # The first-event watchdog replays a silent local stream once. A replay
+    # would hand the passthrough agent the same request twice (and without its
+    # chat id), so actions with side effects would run twice.
+    captured, chunks = _silent_stream_requests(monkeypatch, HUGO)
+    assert len(captured) == 1
+    assert captured[0]["X-Odysseus-Chat"] == "chat-7"
+    assert any("Read timeout" in c for c in chunks)
+
+
+def test_silent_stream_of_other_model_is_still_replayed_once(monkeypatch, hugo_patterns):
+    captured, _chunks = _silent_stream_requests(monkeypatch, OTHER)
+    assert len(captured) == 2
+
+
 class _FakeResponse:
     is_success = True
     status_code = 200
