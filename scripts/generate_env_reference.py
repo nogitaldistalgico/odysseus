@@ -88,6 +88,7 @@ AREA_ORDER = (
     "Email",
     "Calendar, notes and single-user mode",
     "Upload and media limits",
+    "Media Studio and fitness coach (fork)",
     "Search",
     "Memory and skills",
     "Speech and vision models",
@@ -1004,6 +1005,40 @@ VARIABLE_NOTES: dict[str, tuple[str, str, str]] = {
         "Deployment and first run", INTERNAL,
         "Seconds the server waits for in-flight requests and background loops to "
         "finish during a graceful shutdown.",
+    ),
+    # -- Fork: Media Studio and fitness coach -------------------------------
+    "ODYSSEUS_STUDIO_UPLOAD_MAX_BYTES": (
+        "Upload and media limits", USER,
+        "Maximum bytes accepted for a reference image or video uploaded to the "
+        "Media Studio.",
+    ),
+    "ODYSSEUS_STUDIO_POLL_SECONDS": (
+        "Media Studio and fitness coach (fork)", USER,
+        "Interval in seconds of the background sweep that finishes pending Studio "
+        "video jobs whose client went away.",
+    ),
+    "ODYSSEUS_INPROCESS_STUDIO_JOBS": (
+        "Media Studio and fitness coach (fork)", USER,
+        "On by default. Set to 0 to disable the in-process Studio job finaliser, "
+        "e.g. when another worker runs it.",
+    ),
+    "ODYSSEUS_STUDIO_REFERER": (
+        "Media Studio and fitness coach (fork)", USER,
+        "HTTP-Referer the Studio sends to OpenRouter for attribution.",
+    ),
+    "ODYSSEUS_STUDIO_MAGIC_PROMPT_MODEL": (
+        "Media Studio and fitness coach (fork)", USER,
+        "OpenRouter model the Studio uses to expand a short prompt into a "
+        "detailed one.",
+    ),
+    "ODYSSEUS_FITNESS_NOTE_TTL_DAYS": (
+        "Media Studio and fitness coach (fork)", USER,
+        "Days a temporary fitness-coach note keeps shaping the score before it "
+        "expires.",
+    ),
+    "ODYSSEUS_FITNESS_HISTORY_DAYS": (
+        "Media Studio and fitness coach (fork)", USER,
+        "Days of fitness history the coach keeps before older entries are pruned.",
     ),
 }
 

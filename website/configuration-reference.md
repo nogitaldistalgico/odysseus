@@ -21,7 +21,7 @@ described as a switch that turns something off, the read rejects `0`, `false`,
 `no` and `off` and treats everything else as on. The `Default` column is the
 value the code falls back to when the variable is unset, quoted from the source.
 
-The source tree reads **149** `ODYSSEUS_*` variables: 92 an operator may want to set, and 57 that are internal - sentinels, fixture switches, capture hooks and development tooling. The internal ones are listed too, in their own section, so this page can be checked against the source mechanically.
+The source tree reads **156** `ODYSSEUS_*` variables: 99 an operator may want to set, and 57 that are internal - sentinels, fixture switches, capture hooks and development tooling. The internal ones are listed too, in their own section, so this page can be checked against the source mechanically.
 
 > This page is generated. Edit `scripts/generate_env_reference.py` and
 > re-run it; `tests/test_env_reference.py` enforces that the committed page
@@ -151,7 +151,19 @@ The source tree reads **149** `ODYSSEUS_*` variables: 92 an operator may want to
 | `ODYSSEUS_MEMORY_IMPORT_MAX_BYTES` | `10 * 1024 * 1024` | `src/upload_limits.py` (+1 more) | Maximum bytes accepted for a memory import file. |
 | `ODYSSEUS_PERSONAL_UPLOAD_MAX_BYTES` | `25 * 1024 * 1024` | `src/upload_limits.py` (+1 more) | Maximum bytes accepted for a personal-documents upload. |
 | `ODYSSEUS_STT_MAX_AUDIO_BYTES` | `25 * 1024 * 1024` | `src/upload_limits.py` | Maximum bytes accepted for an audio file submitted for transcription. |
+| `ODYSSEUS_STUDIO_UPLOAD_MAX_BYTES` | `100 * 1024 * 1024` | `src/upload_limits.py` | Maximum bytes accepted for a reference image or video uploaded to the Media Studio. |
 | `ODYSSEUS_VISION_MAX_SIDE` | `'1280'` | `src/document_processor.py` | Maximum pixel side for image attachments sent directly to a vision model. |
+
+### Media Studio and fitness coach (fork)
+
+| Variable | Default | Read in | What it does |
+|---|---|---|---|
+| `ODYSSEUS_FITNESS_HISTORY_DAYS` | `'400'` | `routes/fitness_routes.py` | Days of fitness history the coach keeps before older entries are pruned. |
+| `ODYSSEUS_FITNESS_NOTE_TTL_DAYS` | `'21'` | `routes/fitness_routes.py` | Days a temporary fitness-coach note keeps shaping the score before it expires. |
+| `ODYSSEUS_INPROCESS_STUDIO_JOBS` | `'1'` | `app.py` | On by default. Set to 0 to disable the in-process Studio job finaliser, e.g. when another worker runs it. |
+| `ODYSSEUS_STUDIO_MAGIC_PROMPT_MODEL` | `'anthropic/claude-sonnet-4.5'` | `routes/studio/studio_routes.py` | OpenRouter model the Studio uses to expand a short prompt into a detailed one. |
+| `ODYSSEUS_STUDIO_POLL_SECONDS` | `'20'` | `app.py` | Interval in seconds of the background sweep that finishes pending Studio video jobs whose client went away. |
+| `ODYSSEUS_STUDIO_REFERER` | `'https://github.com/odysseus-dev/odysseus'` | `routes/studio/studio_routes.py` | HTTP-Referer the Studio sends to OpenRouter for attribution. |
 
 ### Search
 
@@ -302,7 +314,7 @@ reads three ways, because no single pattern covers the codebase:
   lines, so one read lives inside a string literal.
 
 The three passes are not redundancy. A line-based grep for a direct
-`os.environ.get("ODYSSEUS_...` call finds 117 of the 149 variables on this
+`os.environ.get("ODYSSEUS_...` call finds 122 of the 156 variables on this
 page. What it misses is reads through an env-reader helper, reads whose call
 spans more than one line, reads whose variable name is held in a module
 constant, and reads through a mapping passed in as an argument - which is the
