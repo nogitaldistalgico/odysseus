@@ -116,7 +116,7 @@ def _context_harness(monkeypatch, model, prefs):
             attachment_meta=[],
         )
 
-    def fake_add_user_message(sess, chat_handler, preprocessed, incognito=False):
+    def fake_add_user_message(sess, chat_handler, preprocessed, incognito=False, **kwargs):
         sess.messages.append({"role": "user", "content": preprocessed.user_content})
 
     async def fake_maybe_compact(sess, endpoint_url, model, messages, headers, owner=None):
