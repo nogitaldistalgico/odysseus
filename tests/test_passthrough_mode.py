@@ -113,7 +113,7 @@ def _context_harness(monkeypatch, model):
             attachment_meta=[],
         )
 
-    def fake_add_user_message(sess, chat_handler, preprocessed, incognito=False):
+    def fake_add_user_message(sess, chat_handler, preprocessed, incognito=False, **kwargs):
         sess.messages.append({"role": "user", "content": preprocessed.user_content})
 
     async def fake_maybe_compact(sess, endpoint_url, model, messages, headers, owner=None):
@@ -168,6 +168,7 @@ async def _build(sess, chat_processor, message):
         message=message,
         session_id="chat-1",
         search_context="PREFETCHED SEARCH RESULTS",
+        selected_notes_context="SELECTED NOTE BODY",
     )
 
 
@@ -187,6 +188,7 @@ async def test_passthrough_context_is_only_user_and_assistant_turns(monkeypatch,
     assert "Current date and time" not in blob
     assert "PREFETCHED SEARCH RESULTS" not in blob
     assert "YOUTUBE TRANSCRIPT" not in blob
+    assert "SELECTED NOTE BODY" not in blob
 
 
 @pytest.mark.asyncio
@@ -204,6 +206,7 @@ async def test_other_model_context_is_unchanged(monkeypatch, hugo_patterns):
     assert "Current date and time" in blob
     assert "PREFETCHED SEARCH RESULTS" in blob
     assert "YOUTUBE TRANSCRIPT" in blob
+    assert "SELECTED NOTE BODY" in blob
     assert ctx.messages[-1] == {"role": "user", "content": message}
     assert ctx.used_memories == [{"text": "stale memory"}]
 

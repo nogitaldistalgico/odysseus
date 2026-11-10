@@ -1309,8 +1309,9 @@ async def build_chat_context(
     if search_context and allow_tool_preprocessing and not casual_low_signal:
         preface.append(untrusted_context_message("prefetched search context", search_context))
 
-    # Inject selected notes as context
-    if selected_notes_context:
+    # Inject selected notes as context. Passthrough models get no Odysseus
+    # context, the user's note selection included (src/passthrough.py).
+    if selected_notes_context and not passthrough:
         selected_notes_context = (
             "The following selected notes and todos are reference context explicitly chosen "
             "by the user. Use them directly when relevant to the user's request. Do not "
