@@ -1971,22 +1971,13 @@ async function initOpenCodeSettings() {
       opencode_projects: projInput.value.split(',').map(s => s.trim()).filter(Boolean)
     };
     try {
-      const res = await fetch('/api/auth/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (res.ok) {
-        msgEl.textContent = 'Saved!';
-        msgEl.style.color = '#2ea043'; // success green
-        setTimeout(() => msgEl.textContent = '', 3000);
-        // Force the backend proxy to reload its singleton instance
-        fetch('/api/opencode-config/reload', { method: 'POST' }).catch(()=>{});
-      } else {
-        const err = await res.text();
-        msgEl.textContent = 'Error: ' + err;
-        msgEl.style.color = '#f85149';
-      }
+      // postSettings checks response.ok and throws on 4xx/5xx.
+      await _postSettings(payload);
+      msgEl.textContent = 'Saved!';
+      msgEl.style.color = '#2ea043'; // success green
+      setTimeout(() => msgEl.textContent = '', 3000);
+      // Force the backend proxy to reload its singleton instance
+      fetch('/api/opencode-config/reload', { method: 'POST' }).catch(()=>{});
     } catch (err) {
       msgEl.textContent = 'Error: ' + err.message;
       msgEl.style.color = '#f85149';
