@@ -424,6 +424,37 @@ async def test_other_model_still_enters_agent_mode(monkeypatch, hugo_patterns, f
     assert captured["path"] == "agent"
 
 
+class _ActiveDocQuery(_EmptyQuery):
+    def first(self):
+        return SimpleNamespace(
+            id="doc-1", title="Brief", content="Hallo", session_id="chat-1",
+            is_active=True, doc_type="text", owner="alice",
+        )
+
+
+class _ActiveDocDb(_EmptyDb):
+    def query(self, *args, **kwargs):
+        return _ActiveDocQuery()
+
+    def expunge(self, obj):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_active_document_edit_wording_keeps_passthrough_in_chat(monkeypatch, hugo_patterns):
+    # Upstream escalates "edit"-style wording on an active document into agent
+    # mode after the passthrough guard has run; a passthrough chat must not.
+    captured = {}
+    endpoint = _chat_stream_endpoint(monkeypatch, HUGO, "Bitte rewrite den Text", captured)
+    monkeypatch.setattr(chat_routes, "SessionLocal", _ActiveDocDb)
+    response = await endpoint(_StreamRequest({"mode": "chat", "message": "Bitte rewrite den Text"}))
+    async for _ in response.body_iterator:
+        pass
+
+    assert captured["path"] == "chat"
+    assert captured["agent_mode"] is False
+
+
 @pytest.mark.asyncio
 async def test_other_model_plain_chat_stays_chat(monkeypatch, hugo_patterns):
     captured = await _run_stream(monkeypatch, OTHER, {"mode": "chat"}, "Erzähl mir einen Witz")

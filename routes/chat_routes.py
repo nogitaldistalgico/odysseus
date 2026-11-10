@@ -3380,6 +3380,13 @@ def setup_chat_routes(
                 getattr(active_doc, "id", ""),
             )
 
+        # Second passthrough guard (src/passthrough.py), after the last
+        # automatic chat→agent escalation: upstream adds escalations after the
+        # first guard above, and none of them may move a passthrough chat.
+        if is_passthrough_model(sess.model):
+            chat_mode = "chat"
+            auto_escalated = False
+
         # Build disabled-tools set from frontend toggles + user privileges
         # Product Agent turns resolve a contract once.  A native desktop/web
         # surface is still the product surface: its runtime marker must not
