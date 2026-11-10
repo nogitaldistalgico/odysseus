@@ -52,7 +52,7 @@ def db_session(monkeypatch, tmp_path):
     Session = sessionmaker(bind=engine)
     db = Session()
     db.add_all([
-        ModelEndpoint(id="img1", name="Mac FLUX", base_url="http://192.168.40.142:11440",
+        ModelEndpoint(id="img1", name="Mac FLUX", base_url="http://192.168.1.20:8188",
                       api_key="sk-local", model_type="image", is_enabled=True,
                       cached_models='["flux3-klein"]', pinned_models='["flux2-klein-4b"]'),
         ModelEndpoint(id="off", name="Disabled", base_url="http://10.0.0.2/v1", model_type="image",
@@ -141,8 +141,8 @@ def test_models_prepends_visible_local_image_models_without_caching(db_session, 
     ]
     # Only the visible endpoint is asked, with its key.
     assert sorted(_CapsClient.calls) == [
-        ("http://192.168.40.142:11440/v1/models", {"Authorization": "Bearer sk-local"}),
-        ("http://192.168.40.142:11440/v1/videos/models", {"Authorization": "Bearer sk-local"}),
+        ("http://192.168.1.20:8188/v1/models", {"Authorization": "Bearer sk-local"}),
+        ("http://192.168.1.20:8188/v1/videos/models", {"Authorization": "Bearer sk-local"}),
     ]
     assert [m["id"] for m in result["video"]] == ["local/img1/ltx-2.3", "google/veo-3.1"]
     assert result["video"][0] == {
@@ -270,7 +270,7 @@ def test_generate_photo_goes_to_local_endpoint(db_session, monkeypatch, tmp_path
     assert media["job_status"] == "completed"
     assert media["file_size"] == len(PNG)
 
-    assert captured["url"] == "http://192.168.40.142:11440/v1/images/generations"
+    assert captured["url"] == "http://192.168.1.20:8188/v1/images/generations"
     assert captured["json"] == {
         "model": "flux3-klein", "prompt": "a lighthouse", "n": 1,
         "response_format": "b64_json", "size": "1024x768", "seed": 7, "steps": 4,
@@ -289,9 +289,9 @@ def test_generate_photo_goes_to_local_endpoint(db_session, monkeypatch, tmp_path
 
 
 @pytest.mark.parametrize("url, expected, key_sent", [
-    ("/files/out.png", "http://192.168.40.142:11440/files/out.png", True),
+    ("/files/out.png", "http://192.168.1.20:8188/files/out.png", True),
     ("https://cdn.example.com/out.png", "https://cdn.example.com/out.png", False),
-    ("https://192.168.40.142:11440/out.png", "https://192.168.40.142:11440/out.png", False),
+    ("https://192.168.1.20:8188/out.png", "https://192.168.1.20:8188/out.png", False),
 ])
 def test_generate_photo_local_url_response(db_session, monkeypatch, tmp_path, url, expected, key_sent):
     captured = {}
@@ -455,8 +455,8 @@ def test_pending_photo_without_a_task_is_failed_not_stuck(db_session, monkeypatc
 # Local video (same endpoint, OpenRouter-shaped /videos API)
 # ---------------------------------------------------------------------------
 VIDEO_ID = "local/img1/ltx-2.3"
-POLL_URL = "http://192.168.40.142:11440/v1/videos/vid_1"
-MP4_URL = "http://192.168.40.142:11440/v1/videos/vid_1/content.mp4"
+POLL_URL = "http://192.168.1.20:8188/v1/videos/vid_1"
+MP4_URL = "http://192.168.1.20:8188/v1/videos/vid_1/content.mp4"
 
 
 def _patch_video_client(monkeypatch, captured, poll_answers=()):
@@ -524,7 +524,7 @@ def test_generate_video_posts_to_local_endpoint(db_session, monkeypatch):
     posts = [c for c in captured["calls"] if c[0] == "POST"]
     assert len(posts) == 1
     _, url, headers, payload = posts[0]
-    assert url == "http://192.168.40.142:11440/v1/videos"
+    assert url == "http://192.168.1.20:8188/v1/videos"
     assert headers == KEY
     assert payload == {
         "model": "ltx-2.3", "prompt": "waves at dusk",
@@ -605,7 +605,7 @@ def test_deleting_a_pending_local_video_cancels_it_upstream(db_session, monkeypa
 
     asyncio.run(sr._delete_studio_media(_request(), media_id))
 
-    assert ("DELETE", "http://192.168.40.142:11440/v1/videos/vid_1", KEY) in captured["calls"]
+    assert ("DELETE", "http://192.168.1.20:8188/v1/videos/vid_1", KEY) in captured["calls"]
     db = db_session()
     try:
         m = db.get(StudioMedia, media_id)
@@ -616,7 +616,7 @@ def test_deleting_a_pending_local_video_cancels_it_upstream(db_session, monkeypa
 
 @pytest.mark.parametrize("answer", [
     {"status": "cancelled"},
-    {"status": "completed", "unsigned_urls": ["http://192.168.40.142:11440/v1/videos/gone.mp4"]},
+    {"status": "completed", "unsigned_urls": ["http://192.168.1.20:8188/v1/videos/gone.mp4"]},
 ])
 def test_local_video_terminal_states_never_stay_pending(db_session, monkeypatch, answer):
     _patch_video_client(monkeypatch, {}, poll_answers=[answer])

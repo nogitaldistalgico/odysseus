@@ -134,7 +134,7 @@ def _context_harness(monkeypatch, model, prefs):
     ))
     monkeypatch.setattr(chat_helpers, "add_user_message", fake_add_user_message)
     monkeypatch.setattr(chat_helpers, "load_prefs_for_user", lambda user: dict(prefs))
-    monkeypatch.setattr(chat_helpers, "effective_user", lambda request: "till")
+    monkeypatch.setattr(chat_helpers, "effective_user", lambda request: "alice")
     monkeypatch.setattr(chat_helpers, "_normalize_model_id_from_cache", lambda sess: None)
     monkeypatch.setattr(chat_helpers, "normalize_model_id", lambda endpoint_url, model, **kwargs: None)
     monkeypatch.setattr(chat_helpers, "maybe_compact", fake_maybe_compact)
@@ -239,6 +239,6 @@ def test_companion_info_advertises_widgets():
 
     router = setup_companion_routes()
     info = next(r.endpoint for r in router.routes if r.path.endswith("/info"))
-    body = info(SimpleNamespace(state=SimpleNamespace(current_user="till")))
+    body = info(SimpleNamespace(state=SimpleNamespace(current_user="alice")))
 
     assert body["capabilities"]["widgets"] is True

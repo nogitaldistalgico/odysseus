@@ -22,7 +22,7 @@ from src.tool_execution import (
 )
 
 
-def _coach_workspace(user: str = "till") -> str:
+def _coach_workspace(user: str = "alice") -> str:
     return os.path.join(FITNESS_DATA_DIR, user, "fitness_data")
 
 
@@ -63,7 +63,7 @@ def test_vet_workspace_accepts_the_coach_directory(tmp_path, monkeypatch):
     current_constants = importlib.import_module("src.constants")
     data_dir = tmp_path / "data"
     fitness_dir = data_dir / "users"
-    workspace = fitness_dir / "till" / "fitness_data"
+    workspace = fitness_dir / "alice" / "fitness_data"
     workspace.mkdir(parents=True)
     monkeypatch.setattr(current_constants, "DATA_DIR", str(data_dir))
     monkeypatch.setattr(current_constants, "FITNESS_DATA_DIR", str(fitness_dir))

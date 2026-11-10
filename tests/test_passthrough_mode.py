@@ -137,7 +137,7 @@ def _context_harness(monkeypatch, model):
     ))
     monkeypatch.setattr(chat_helpers, "add_user_message", fake_add_user_message)
     monkeypatch.setattr(chat_helpers, "load_prefs_for_user", lambda user: {})
-    monkeypatch.setattr(chat_helpers, "effective_user", lambda request: "till")
+    monkeypatch.setattr(chat_helpers, "effective_user", lambda request: "alice")
     monkeypatch.setattr(chat_helpers, "_normalize_model_id_from_cache", lambda sess: None)
     monkeypatch.setattr(chat_helpers, "normalize_model_id", lambda endpoint_url, model, **kwargs: None)
     monkeypatch.setattr(chat_helpers, "maybe_compact", fake_maybe_compact)
@@ -294,7 +294,7 @@ class _StreamRequest:
     def __init__(self, form):
         self.headers = {}
         self.app = SimpleNamespace(state=SimpleNamespace(auth_manager=None))
-        self.state = SimpleNamespace(current_user="till")
+        self.state = SimpleNamespace(current_user="alice")
         self._form = {"session": "chat-1", "compare_mode": "true", **form}
 
     async def form(self):
@@ -315,7 +315,7 @@ def _chat_stream_endpoint(monkeypatch, model, message, captured):
         save_sessions=lambda: None,
     )
     context = SimpleNamespace(
-        user="till",
+        user="alice",
         messages=[{"role": "user", "content": message}],
         route_messages=[{"role": "user", "content": message}],
         preprocessed=SimpleNamespace(attachment_meta=[]),
@@ -354,7 +354,7 @@ def _chat_stream_endpoint(monkeypatch, model, message, captured):
     modes = []
     monkeypatch.setattr(chat_routes, "coerce_message_and_session", lambda *args, **kwargs: (message, "chat-1"))
     monkeypatch.setattr(chat_routes, "_verify_session_owner", lambda *args, **kwargs: None)
-    monkeypatch.setattr(chat_routes, "effective_user", lambda request: "till")
+    monkeypatch.setattr(chat_routes, "effective_user", lambda request: "alice")
     monkeypatch.setattr(chat_routes, "_clear_orphaned_session_endpoint", lambda *args, **kwargs: False)
     monkeypatch.setattr(chat_routes, "_recover_empty_session_model", lambda *args, **kwargs: False)
     monkeypatch.setattr(chat_routes, "_reconcile_selected_route_from_request", lambda *args, **kwargs: None)
@@ -452,7 +452,7 @@ def _fake_resolver(config):
     return resolve_endpoint, calls
 
 
-HUGO_ROUTE = (HUGO_URL, HUGO, {"Authorization": "Bearer odysseus-till"})
+HUGO_ROUTE = (HUGO_URL, HUGO, {"Authorization": "Bearer odysseus-alice"})
 OTHER_ROUTE = (OTHER_URL, OTHER, {"Authorization": "Bearer other"})
 
 
@@ -460,28 +460,28 @@ def test_task_endpoint_uses_default_model_instead_of_passthrough_chat(monkeypatc
     resolver, _ = _fake_resolver({"default": OTHER_ROUTE})
     monkeypatch.setattr(task_endpoint, "resolve_endpoint", resolver)
 
-    assert task_endpoint.resolve_task_endpoint(*HUGO_ROUTE, owner="till") == OTHER_ROUTE
+    assert task_endpoint.resolve_task_endpoint(*HUGO_ROUTE, owner="alice") == OTHER_ROUTE
 
 
 def test_task_endpoint_skips_task_when_default_is_passthrough_too(monkeypatch, hugo_patterns):
     resolver, _ = _fake_resolver({"default": HUGO_ROUTE})
     monkeypatch.setattr(task_endpoint, "resolve_endpoint", resolver)
 
-    assert task_endpoint.resolve_task_endpoint(*HUGO_ROUTE, owner="till") == (None, None, None)
+    assert task_endpoint.resolve_task_endpoint(*HUGO_ROUTE, owner="alice") == (None, None, None)
 
 
 def test_task_endpoint_never_uses_a_configured_passthrough_utility(monkeypatch, hugo_patterns):
     resolver, _ = _fake_resolver({"task": HUGO_ROUTE, "default": OTHER_ROUTE})
     monkeypatch.setattr(task_endpoint, "resolve_endpoint", resolver)
 
-    assert task_endpoint.resolve_task_endpoint(owner="till") == OTHER_ROUTE
+    assert task_endpoint.resolve_task_endpoint(owner="alice") == OTHER_ROUTE
 
 
 def test_task_endpoint_unchanged_for_other_models(monkeypatch, hugo_patterns):
     resolver, calls = _fake_resolver({"default": HUGO_ROUTE})
     monkeypatch.setattr(task_endpoint, "resolve_endpoint", resolver)
 
-    assert task_endpoint.resolve_task_endpoint(*OTHER_ROUTE, owner="till") == OTHER_ROUTE
+    assert task_endpoint.resolve_task_endpoint(*OTHER_ROUTE, owner="alice") == OTHER_ROUTE
     assert calls == ["task"]
 
 
@@ -494,7 +494,7 @@ def test_task_candidates_drop_every_passthrough_route(monkeypatch, hugo_patterns
         ("https://backup.example/v1", "backup-model", {}),
     ])
 
-    candidates = task_endpoint.resolve_task_candidates(*HUGO_ROUTE, owner="till")
+    candidates = task_endpoint.resolve_task_candidates(*HUGO_ROUTE, owner="alice")
 
     assert [model for _, model, _ in candidates] == ["utility-model", "backup-model"]
 
@@ -514,7 +514,7 @@ async def test_auto_name_never_asks_a_passthrough_model(monkeypatch, hugo_patter
     monkeypatch.setattr(llm_core, "llm_call_async", fake_llm)
     sess = SimpleNamespace(
         id="chat-1",
-        owner="till",
+        owner="alice",
         endpoint_url=HUGO_URL,
         model=HUGO,
         headers={},
@@ -542,7 +542,7 @@ async def test_auto_name_uses_default_model_for_passthrough_chat(monkeypatch, hu
     monkeypatch.setattr(llm_core, "llm_call_async", fake_llm)
     sess = SimpleNamespace(
         id="chat-1",
-        owner="till",
+        owner="alice",
         endpoint_url=HUGO_URL,
         model=HUGO,
         headers={},
@@ -599,7 +599,7 @@ def _post_response_jobs(monkeypatch, model):
     chat_helpers.run_post_response_tasks(
         sess, SimpleNamespace(save_sessions=lambda: None), "chat-1", "hallo", "hi", None,
         {"auto_memory": True}, memory_manager=MagicMock(), memory_vector=MagicMock(),
-        webhook_manager=None, owner="till",
+        webhook_manager=None, owner="alice",
     )
     return names
 
@@ -658,7 +658,7 @@ def _stream_headers(monkeypatch, model, session_id):
     async def drain():
         async for _ in llm_core.stream_llm(
             HUGO_URL, model, [{"role": "user", "content": "hi"}],
-            headers={"Authorization": "Bearer odysseus-till"}, session_id=session_id,
+            headers={"Authorization": "Bearer odysseus-alice"}, session_id=session_id,
         ):
             pass
 
@@ -670,7 +670,7 @@ def _stream_headers(monkeypatch, model, session_id):
 def test_stream_to_passthrough_model_carries_chat_header(monkeypatch, hugo_patterns):
     headers = _stream_headers(monkeypatch, HUGO, "chat-1")
     assert headers["X-Odysseus-Chat"] == "chat-1"
-    assert headers["Authorization"] == "Bearer odysseus-till"
+    assert headers["Authorization"] == "Bearer odysseus-alice"
 
 
 def test_stream_to_other_model_has_no_chat_header(monkeypatch, hugo_patterns):
@@ -715,11 +715,11 @@ def _call_headers(monkeypatch, model, session_id, caller_headers):
 
 
 def test_call_to_passthrough_model_carries_chat_header(monkeypatch, hugo_patterns):
-    caller_headers = {"Authorization": "Bearer odysseus-till"}
+    caller_headers = {"Authorization": "Bearer odysseus-alice"}
     headers = _call_headers(monkeypatch, HUGO, "chat-2", caller_headers)
     assert headers["X-Odysseus-Chat"] == "chat-2"
     # The session's stored headers are never mutated.
-    assert caller_headers == {"Authorization": "Bearer odysseus-till"}
+    assert caller_headers == {"Authorization": "Bearer odysseus-alice"}
 
 
 def test_call_to_other_model_has_no_chat_header(monkeypatch, hugo_patterns):

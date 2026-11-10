@@ -28,7 +28,7 @@ async def _call_api_chat(monkeypatch, *, is_fitness_coach):
         add_message=lambda message: None,
     )
     context = SimpleNamespace(
-        user="till",
+        user="alice",
         messages=[{"role": "user", "content": "Wie lief mein Training?"}],
         route_messages=[],
         preface=[],
@@ -52,7 +52,7 @@ async def _call_api_chat(monkeypatch, *, is_fitness_coach):
     monkeypatch.setattr(llm_core, "llm_call_async", fake_llm)
     monkeypatch.setattr(foreground_model_routing, "_load_policy_preferences", lambda owner=None: {})
     monkeypatch.setattr(chat_routes, "_verify_session_owner", lambda *args, **kwargs: None)
-    monkeypatch.setattr(chat_routes, "effective_user", lambda request: "till")
+    monkeypatch.setattr(chat_routes, "effective_user", lambda request: "alice")
     monkeypatch.setattr(chat_routes, "_clear_orphaned_session_endpoint", lambda *args, **kwargs: False)
     monkeypatch.setattr(chat_routes, "_recover_empty_session_model", lambda *args, **kwargs: False)
     monkeypatch.setattr(chat_routes, "_enforce_chat_privileges", lambda *args, **kwargs: None)
@@ -72,7 +72,7 @@ async def _call_api_chat(monkeypatch, *, is_fitness_coach):
     request = SimpleNamespace(
         headers={},
         app=SimpleNamespace(state=SimpleNamespace(auth_manager=None)),
-        state=SimpleNamespace(current_user="till"),
+        state=SimpleNamespace(current_user="alice"),
     )
     response = await endpoint(request, ChatRequest(
         message="Wie lief mein Training?",
