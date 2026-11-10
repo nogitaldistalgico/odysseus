@@ -16,7 +16,7 @@
  * @module studio/studio
  */
 
-import uiModule from '../ui.js';
+import uiModule from '../ui.js?v=20260916largetoolscroll1';
 import spinnerModule from '../spinner.js';
 import * as Modals from '../modalManager.js';
 import { makeWindowDraggable } from '../windowDrag.js';
