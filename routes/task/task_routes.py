@@ -10,19 +10,28 @@ from typing import Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from core.database import SessionLocal, ScheduledTask, TaskRun
+from core.database import SessionLocal, ScheduledTask, TaskRun, NotificationLog
 from core.constants import internal_api_base
 from src.auth_helpers import get_current_user
 from src.constants import DATA_DIR, EMAIL_URGENCY_CACHE_DIR
+from src.endpoint_resolver import resolve_owner_registered_endpoint_url
 from src.task_action_policy import (
     ADMIN_ONLY_TASK_ACTIONS,
     is_admin_only_task_action,
     owner_has_admin_task_privileges,
 )
-from src.task_scheduler import compute_next_run, HOUSEKEEPING_DEFAULTS
+from src.task_scheduler import compute_next_run, is_valid_cron, HOUSEKEEPING_DEFAULTS
 from routes.prefs_routes import _load_for_user, _save_for_user
 
 logger = logging.getLogger(__name__)
+
+
+def _seal_request_task_authority(request, prompt, task_type, action, owner):
+    from src.agent_runtime.authority import MISSING_AUTHORITY, is_internal_tool_request, seal_task_authority
+    # A tool HTTP call starts another ASGI context. Its model-produced body is
+    # not a fresh user request, even though the internal token authenticates it.
+    parent = None if is_internal_tool_request(request) else MISSING_AUTHORITY
+    return seal_task_authority(prompt, task_type, action, owner=owner, parent_authority=parent)
 
 
 def _maybe_cascade_calendar_event(task) -> None:
@@ -280,15 +289,15 @@ def _resolve_run_endpoint(db, task: ScheduledTask, run: TaskRun) -> str:
 
     try:
         from core.database import ModelEndpoint
-        eps = db.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True).all()
+        from src.auth_helpers import owner_filter
+        from src.endpoint_resolver import _endpoint_enabled_models
+
+        eps = owner_filter(
+            db.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True),
+            ModelEndpoint, getattr(task, "owner", None),
+        ).all()
         for ep in eps:
-            cached = []
-            if ep.cached_models:
-                try:
-                    cached = json.loads(ep.cached_models) or []
-                except Exception:
-                    cached = []
-            if model in cached:
+            if model in _endpoint_enabled_models(ep):
                 return ep.base_url or ""
     except Exception:
         pass
@@ -331,6 +340,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 max_tokens=20,
                 headers=headers,
                 timeout=15,
+                thinking_mode="off",
             )
             title = result.strip().strip('"\'').strip()
             return title[:60] if title else prompt[:50].strip()
@@ -466,10 +476,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         if req.trigger_type == "schedule" and req.schedule == "cron" and not req.cron_expression:
             raise HTTPException(400, "Cron expression is required for cron schedule")
         if req.trigger_type == "schedule" and req.schedule == "cron" and req.cron_expression:
-            try:
-                from croniter import croniter
-                croniter(req.cron_expression)
-            except Exception:
+            if not is_valid_cron(req.cron_expression):
                 raise HTTPException(400, "Invalid cron expression")
         if req.trigger_type == "event" and not req.trigger_event:
             raise HTTPException(400, "Event name is required for event-triggered tasks")
@@ -511,6 +518,12 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         db = SessionLocal()
         try:
             then_task_id = _validate_then_task_id(db, req.then_task_id, user)
+            endpoint_url = None
+            if req.endpoint_url:
+                try:
+                    endpoint_url = resolve_owner_registered_endpoint_url(db, req.endpoint_url, user)
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from exc
             notifications_enabled = (
                 False if req.task_type == "action" and req.notifications_enabled is None
                 else bool(req.notifications_enabled) if req.notifications_enabled is not None
@@ -530,6 +543,8 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 owner=user,
                 name=name,
                 prompt=req.prompt,
+                request_authority_json=_seal_request_task_authority(
+                    request, req.prompt, req.task_type, req.action, user),
                 task_type=req.task_type,
                 action=req.action,
                 schedule=req.schedule,
@@ -545,7 +560,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 status="active" if (req.trigger_type in ("event", "webhook") or next_run) else "completed",
                 output_target=req.output_target,
                 model=req.model or None,
-                endpoint_url=req.endpoint_url or None,
+                endpoint_url=endpoint_url,
                 then_task_id=then_task_id,
                 webhook_token=webhook_token,
                 notifications_enabled=notifications_enabled,
@@ -568,6 +583,57 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             return {"notifications": []}
         notes = task_scheduler.pop_notifications(owner=user)
         return {"notifications": notes}
+
+    @router.get("/notification-logs")
+    async def get_notification_logs(request: Request, limit: int = 200):
+        """Return persisted task notifications without consuming them."""
+        user = _owner(request)
+        if not user:
+            return {"notifications": []}
+        limit = max(1, min(int(limit or 200), 1000))
+        db = SessionLocal()
+        try:
+            rows = (db.query(NotificationLog)
+                    .filter(NotificationLog.owner == user)
+                    .order_by(NotificationLog.timestamp.desc())
+                    .limit(limit)
+                    .all())
+            return {"notifications": [
+                {
+                    "id": row.id,
+                    "task_name": row.task_name,
+                    "task_id": row.task_id,
+                    "status": row.status,
+                    "body": row.body,
+                    "timestamp": row.timestamp.isoformat() + "Z" if row.timestamp else None,
+                }
+                for row in rows
+            ]}
+        finally:
+            db.close()
+
+    @router.post("/notification-logs")
+    async def create_notification_log(request: Request):
+        """Persist an in-app toast so Settings can show notification history."""
+        user = _owner(request)
+        if not user:
+            raise HTTPException(401, "Authentication required")
+        body = await request.json()
+        message = str(body.get("body") or "").strip()[:2000]
+        if not message:
+            raise HTTPException(400, "Notification body required")
+        row = NotificationLog(
+            id=str(uuid.uuid4()), owner=user,
+            task_name=str(body.get("title") or "Odysseus")[:200],
+            status="error" if body.get("status") == "error" else "success",
+            body=message,
+        )
+        db = SessionLocal()
+        try:
+            db.add(row); db.commit()
+            return {"success": True}
+        finally:
+            db.close()
 
     @router.post("/{task_id}/clear-cache")
     async def clear_task_cache(request: Request, task_id: str):
@@ -686,12 +752,22 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 task.task_type = req.task_type
             if req.action is not None:
                 task.action = req.action
+            if any(value is not None for value in (req.prompt, req.task_type, req.action)):
+                task.request_authority_json = _seal_request_task_authority(
+                    request, task.prompt, task.task_type, task.action, user)
             if req.output_target is not None:
                 task.output_target = req.output_target
             if req.model is not None:
                 task.model = req.model or None
             if req.endpoint_url is not None:
-                task.endpoint_url = req.endpoint_url or None
+                try:
+                    # An empty override restores the existing default-model workflow.
+                    task.endpoint_url = (
+                        resolve_owner_registered_endpoint_url(db, req.endpoint_url, user)
+                        if req.endpoint_url else None
+                    )
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from exc
             if req.trigger_type is not None:
                 # Generate webhook token when switching to webhook trigger
                 if req.trigger_type == "webhook" and not task.webhook_token:
@@ -710,10 +786,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 task.character_id = req.character_id or None
             if req.cron_expression is not None:
                 if req.cron_expression:
-                    try:
-                        from croniter import croniter
-                        croniter(req.cron_expression)
-                    except Exception:
+                    if not is_valid_cron(req.cron_expression):
                         raise HTTPException(400, "Invalid cron expression")
                 task.cron_expression = req.cron_expression or None
 
@@ -1174,144 +1247,14 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             if not out.get("prompt"):
                 return {"success": False, "message": "Could not extract a task instruction"}
             return {"success": True, "draft": out}
+        except HTTPException as e:
+            # llm_core raises HTTPException with curated upstream text.
+            logger.error(f"parse_task failed: {e.detail}")
+            return {"success": False, "message": str(e.detail)}
         except Exception as e:
+            # Anything else (JSON/parse/runtime errors) can carry internals;
+            # log it and keep the client message generic.
             logger.error(f"parse_task failed: {e}")
-            return {"success": False, "message": str(e)}
-
-    @router.post("/{task_id}/webhook/{token}")
-    async def webhook_trigger(task_id: str, token: str):
-        """Unauthenticated endpoint — the token IS the auth."""
-        db = SessionLocal()
-        try:
-            task = db.query(ScheduledTask).filter(
-                ScheduledTask.id == task_id,
-                ScheduledTask.webhook_token == token,
-                ScheduledTask.status == "active",
-            ).first()
-            if not task:
-                raise HTTPException(404, "Not found")
-            if (
-                is_admin_only_task_action(task.task_type, task.action)
-                and not owner_has_admin_task_privileges(task.owner)
-            ):
-                task.status = "paused"
-                task.next_run = None
-                db.commit()
-                raise HTTPException(403, f"Action '{task.action}' requires admin privileges")
-        finally:
-            db.close()
-        started = await task_scheduler.run_task_now(task_id)
-        if not started:
-            raise HTTPException(409, "Task is already running")
-        return {"ok": True, "message": "Task triggered via webhook"}
-
-    @router.post("/{task_id}/webhook-regenerate")
-    async def regenerate_webhook(request: Request, task_id: str):
-        user = _owner(request)
-        db = SessionLocal()
-        try:
-            task = db.query(ScheduledTask).filter(ScheduledTask.id == task_id).first()
-            if not task:
-                raise HTTPException(404, "Task not found")
-            if user and task.owner != user:
-                raise HTTPException(403, "Access denied")
-            task.webhook_token = secrets.token_urlsafe(32)
-            db.commit()
-            return {"ok": True, "webhook_token": task.webhook_token}
-        finally:
-            db.close()
-
-    # --- PARSE NATURAL LANGUAGE → TASK DRAFT (AI) ---
-    @router.post("/parse")
-    async def parse_task(request: Request) -> Dict[str, Any]:
-        """Turn a free-form description ("every weekday at 7am research the top
-        AI news and summarize it") into a structured task draft the frontend
-        can pre-fill the form with. Returns a draft only — the user reviews and
-        saves it, so a misread schedule never goes live unreviewed."""
-        from src.endpoint_resolver import resolve_endpoint
-        from src.llm_core import llm_call_async
-        from src.text_helpers import strip_think as _strip_think
-        import json as _json, re as _re
-        from datetime import datetime as _dt
-
-        body = await request.json()
-        desc = (body.get("description") or "").strip()
-        if not desc:
-            return {"success": False, "message": "Nothing to parse"}
-        user = _owner(request)
-
-        now = _dt.now()
-        # Give the model the current date/time + weekday so relative phrasing
-        # ("tomorrow", "every Monday", "in an hour") resolves correctly.
-        ctx = now.strftime("%Y-%m-%d %H:%M (%A)")
-        sys = (
-            "You convert a user's description of a recurring or one-off task into "
-            "STRICT JSON for a task scheduler. The current local date/time is "
-            f"{ctx}. Output ONLY a JSON object, no prose, no markdown fences.\n\n"
-            "Schema (omit fields you can't infer):\n"
-            "{\n"
-            '  "task_type": "llm" | "research",  // "research" if it asks to research/investigate/find out; else "llm"\n'
-            '  "name": "short 3-6 word title",\n'
-            '  "prompt": "the instruction the AI should run on schedule (or the research question)",\n'
-            '  "schedule": "daily" | "weekly" | "monthly" | "once" | "cron",\n'
-            '  "scheduled_time": "HH:MM",        // 24h LOCAL time\n'
-            '  "scheduled_day": 0,               // weekly: 0=Mon..6=Sun; monthly: 1..31\n'
-            '  "scheduled_date": "YYYY-MM-DDTHH:MM",  // only for "once"\n'
-            '  "cron_expression": "m h dom mon dow",  // only if schedule is "cron"\n'
-            '  "output_target": "session" | "email" | "notification"  // use email when the user asks to email the result\n'
-            "}\n\n"
-            "Rules: default schedule to 'daily' if a time is given without a frequency. "
-            "Default scheduled_time to '09:00' if none is stated. For 'every weekday' "
-            "use cron '0 H * * 1-5'. Keep the prompt actionable and self-contained."
-        )
-        try:
-            url, model, headers = resolve_endpoint("utility", owner=user or None)
-            if not url:
-                url, model, headers = resolve_endpoint("default", owner=user or None)
-            if not (url and model):
-                return {"success": False, "message": "No model endpoint configured"}
-            raw = await llm_call_async(
-                url=url, model=model,
-                messages=[{"role": "system", "content": sys},
-                          {"role": "user", "content": desc[:1000]}],
-                temperature=0.2, max_tokens=400, headers=headers, timeout=45,
-            )
-            text = _strip_think(raw or "", prose=False, prompt_echo=False).strip()
-            if text.startswith("```"):
-                text = text.strip("`")
-                if text.lower().startswith("json"):
-                    text = text[4:].lstrip()
-            # Pull the first {...} block in case the model added stray text.
-            m = _re.search(r"\{.*\}", text, _re.S)
-            draft = _json.loads(m.group(0) if m else text)
-            if not isinstance(draft, dict):
-                raise ValueError("not an object")
-            # Whitelist + light validation so the frontend gets clean fields.
-            out: Dict[str, Any] = {}
-            if draft.get("task_type") in ("llm", "research"):
-                out["task_type"] = draft["task_type"]
-            else:
-                out["task_type"] = "llm"
-            for k in ("name", "prompt", "cron_expression", "scheduled_date"):
-                if isinstance(draft.get(k), str) and draft[k].strip():
-                    out[k] = draft[k].strip()
-            if draft.get("schedule") in ("daily", "weekly", "monthly", "once", "cron"):
-                out["schedule"] = draft["schedule"]
-            else:
-                out["schedule"] = "daily"
-            st = draft.get("scheduled_time")
-            if isinstance(st, str) and _re.match(r"^\d{1,2}:\d{2}$", st.strip()):
-                out["scheduled_time"] = st.strip()
-            if isinstance(draft.get("scheduled_day"), int):
-                out["scheduled_day"] = draft["scheduled_day"]
-            if draft.get("output_target") in ("session", "email", "notification"):
-                out["output_target"] = draft["output_target"]
-            out["trigger_type"] = "schedule"
-            if not out.get("prompt"):
-                return {"success": False, "message": "Could not extract a task instruction"}
-            return {"success": True, "draft": out}
-        except Exception as e:
-            logger.error(f"parse_task failed: {e}")
-            return {"success": False, "message": str(e)}
+            return {"success": False, "message": f"Could not draft a task ({type(e).__name__})"}
 
     return router
