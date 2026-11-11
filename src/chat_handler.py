@@ -15,6 +15,7 @@ from src.constants import (
 )
 from core.models import ChatMessage
 from src.chat_helpers import extract_urls, model_supports_vision
+from src.passthrough import append_attachment_references, is_passthrough_model
 from src.document_processor import build_user_content, analyze_image_with_vl_result
 from src.youtube_handler import (
     is_youtube_url,
@@ -144,9 +145,17 @@ class ChatHandler:
         """
         enhanced_message = message
         attachment_meta: List[Dict[str, Any]] = []
+        # Passthrough chats (src/passthrough.py) get no Odysseus processing:
+        # no transcripts (build_chat_context drops them anyway) and attachments
+        # become reference lines instead of text, vision or image_url.
+        passthrough = is_passthrough_model(getattr(sess, "model", None))
 
         # Extract URLs and process YouTube transcripts
-        urls = extract_urls(enhanced_message) if allow_tool_preprocessing else []
+        urls = (
+            extract_urls(enhanced_message)
+            if allow_tool_preprocessing and not passthrough
+            else []
+        )
         youtube_transcripts: List[str] = []
 
         has_youtube = False
@@ -181,7 +190,9 @@ class ChatHandler:
         # bearer-like references; never trust them without an owner check.
         files_by_id: Dict[str, Dict] = {}
         owner = getattr(sess, "owner", None)
-        effective_att_ids = att_ids if allow_tool_preprocessing else []
+        # Passthrough references attachments even on no-tools turns: nothing
+        # is read or probed, and resolve_upload still checks the owner.
+        effective_att_ids = att_ids if (allow_tool_preprocessing or passthrough) else []
         if effective_att_ids:
             for att_id in effective_att_ids:
                 fi = self.upload_handler.resolve_upload(att_id, owner=owner)
@@ -201,6 +212,16 @@ class ChatHandler:
                         "width": fi.get("width"),
                         "height": fi.get("height"),
                     })
+
+        if passthrough:
+            enhanced_message = append_attachment_references(
+                enhanced_message,
+                [files_by_id[a] for a in effective_att_ids if a in files_by_id],
+            )
+            return (
+                enhanced_message, enhanced_message, enhanced_message,
+                youtube_transcripts, attachment_meta,
+            )
 
         # Analyze images only when attachment preprocessing is actually
         # allowed. The vision capability check can probe local model endpoints,
