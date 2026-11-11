@@ -430,7 +430,7 @@ async def test_sender_signature_clear_cache_keeps_other_owner_rows(tmp_path, mon
             pass
 
     monkeypatch.setattr(task_routes, "SessionLocal", lambda: FakeDb())
-    monkeypatch.setattr(task_routes, "get_current_user", lambda _request: "alice")
+    monkeypatch.setattr(task_routes, "require_user_api_aware", lambda _request: "alice")
 
     router = task_routes.setup_task_routes(task_scheduler=SimpleNamespace(pop_notifications=lambda owner: []))
     clear_cache = _route_endpoint(router, "/api/tasks/{task_id}/clear-cache", "POST")
