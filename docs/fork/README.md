@@ -47,5 +47,8 @@ Neue Fork-Dateien müssen diese Regeln einhalten, sonst schlagen Upstream-Tests 
 
 ## Deploy-Hinweise
 
+Update-Anleitung für eigene Instanzen: [upgrade-2026-11.md](upgrade-2026-11.md).
+
+
 - `docker-compose.yml` nennt standardmäßig das Upstream-Image. Für Fork-Builds `ODYSSEUS_IMAGE` auf einen lokalen Namen setzen und mit `--build` starten.
 - Der Upstream-Standardport ist 7011 (`APP_PORT`).
