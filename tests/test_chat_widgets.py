@@ -242,3 +242,18 @@ def test_companion_info_advertises_widgets():
     body = info(SimpleNamespace(state=SimpleNamespace(current_user="alice")))
 
     assert body["capabilities"]["widgets"] is True
+
+
+def test_widget_base_css_aliases_the_companion_ody_tokens():
+    """Widgets written for the iOS companion use --ody-* names; the web frame
+    maps them onto its own theme tokens so they render in the WebUI too."""
+    js = (_REPO / "static" / "js" / "widgetDocument.js").read_text(encoding="utf-8")
+    for alias, target in {
+        "--ody-bg": "var(--bg)",
+        "--ody-surface": "var(--panel)",
+        "--ody-text": "var(--fg)",
+        "--ody-text-secondary": "var(--muted)",
+        "--ody-border": "var(--border)",
+        "--ody-accent": "var(--accent)",
+    }.items():
+        assert f"{alias}:{target}" in js, alias

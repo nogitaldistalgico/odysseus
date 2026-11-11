@@ -186,6 +186,8 @@ const BASE_CSS = `
 --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",system-ui,sans-serif;
 --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
 --muted:color-mix(in srgb,var(--fg) 62%,var(--bg));
+--ody-bg:var(--bg);--ody-surface:var(--panel);--ody-text:var(--fg);--ody-text-secondary:var(--muted);
+--ody-border:var(--border);--ody-accent:var(--accent);
 --series-1:#0a84ff;--series-2:#30d158;--series-3:#ff9f0a;--series-4:#bf5af2;--series-5:#ff375f;--series-6:#64d2ff}
 :root[data-theme=light]{--series-1:#007aff;--series-2:#34c759;--series-3:#ff9500;--series-4:#af52de;--series-5:#ff2d55;--series-6:#32ade6}
 *,*::before,*::after{box-sizing:border-box}
