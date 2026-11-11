@@ -308,7 +308,9 @@ def setup_task_routes(task_scheduler) -> APIRouter:
     router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
     def _owner(request: Request):
-        return require_user_api_aware(request)
+        # Bearer tokens resolve to their owner. Single-user mode (auth off)
+        # keeps None, not "", as the owner of new tasks.
+        return require_user_api_aware(request) or None
 
     async def _generate_task_name(prompt: str, owner: Optional[str] = None) -> str:
         """Use LLM to generate a short task name from the prompt."""
