@@ -2389,7 +2389,8 @@ def setup_chat_routes(
         if is_internal_tool_request(request):
             _append_internal_chat_context(ctx, message)
 
-        is_fitness_coach = bool(chat_request.is_fitness_coach)
+        # Passthrough models never get the coach prompt (src/passthrough.py).
+        is_fitness_coach = bool(chat_request.is_fitness_coach) and not is_passthrough_model(sess.model)
         if is_fitness_coach:
             # Shared with the other injection point below and enriched with the
             # computed indicator digest, so the coach starts the conversation
@@ -2409,7 +2410,7 @@ def setup_chat_routes(
             tool_policy.blocks("trigger_research")
             or tool_policy.blocks("manage_research")
         )
-        if use_research and not research_blocked_by_policy:
+        if use_research and not research_blocked_by_policy and not is_passthrough_model(sess.model):
             try:
                 _r_ep, _r_model, _r_headers = _resolve_research_endpoint(sess)
                 research_ctx = await research_handler.call_research_service(
@@ -3130,6 +3131,10 @@ def setup_chat_routes(
             if get_session_mode(session) == 'research_pending':
                 do_research = True
                 logger.info(f"Session {session} in research_pending — auto-triggering research")
+        # Research mode would put a clarifying system prompt in front of the
+        # passthrough model, or run research on it as a fallback endpoint.
+        if do_research and is_passthrough_model(sess.model):
+            do_research = False
 
         att_ids = []
         if tool_approval_continuation:
@@ -3244,7 +3249,8 @@ def setup_chat_routes(
         if is_internal_tool_request(request):
             _append_internal_chat_context(ctx, message)
 
-        if is_fitness_coach:
+        # Passthrough models never get the coach prompt (src/passthrough.py).
+        if is_fitness_coach and not is_passthrough_model(sess.model):
             # Shared with the other injection point below and enriched with the
             # computed indicator digest, so the coach starts the conversation
             # already knowing the state instead of parsing 14 days of markdown.
@@ -5401,6 +5407,18 @@ def setup_chat_routes(
         except (KeyError, SessionNotFoundError):
             raise HTTPException(404, "Session not found")
 
+        # A passthrough model only ever receives the chat's own user/assistant
+        # turns (src/passthrough.py), never this one-off rewrite prompt. Use the
+        # background-task model instead; it is never a passthrough model.
+        rewrite_url, rewrite_model, rewrite_headers = sess.endpoint_url, sess.model, sess.headers
+        if is_passthrough_model(sess.model):
+            from src.task_endpoint import resolve_task_endpoint
+            rewrite_url, rewrite_model, rewrite_headers = resolve_task_endpoint(
+                owner=getattr(sess, "owner", None) or effective_user(request),
+            )
+            if not rewrite_url or not rewrite_model:
+                raise HTTPException(400, "No non-passthrough model configured for rewriting")
+
         messages = [
             {"role": "system", "content": (
                 "You are rewriting a previous response. Follow the instruction exactly. "
@@ -5417,10 +5435,10 @@ def setup_chat_routes(
             full_response = ""
             try:
                 async for chunk in stream_llm(
-                    sess.endpoint_url,
-                    sess.model,
+                    rewrite_url,
+                    rewrite_model,
                     messages,
-                    headers=sess.headers,
+                    headers=rewrite_headers,
                     temperature=0.7,
                     # 0 = let the server decide (no cap). A hardcoded 4096 made
                     # local reasoning models (Qwen3 / R1) burn the whole budget

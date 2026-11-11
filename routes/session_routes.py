@@ -11,6 +11,7 @@ import logging
 
 from core.session_manager import SessionManager
 from core.models import ChatMessage
+from src.passthrough import is_passthrough_model
 from src.request_models import SessionResponse
 from core.database import Session as DbSession, SessionLocal, Document, GalleryImage, utcnow_naive
 from src.auth_helpers import (
@@ -203,6 +204,14 @@ def _message_metadata(message) -> dict:
     else:
         metadata = getattr(message, "metadata", None)
     return metadata if isinstance(metadata, dict) else {}
+
+
+def _reject_passthrough_compaction(session) -> None:
+    # Passthrough chats are never compacted (src/passthrough.py): the
+    # assistant keeps its own context, and a summary written by -- or replaced
+    # with an empty answer from -- the passthrough model would destroy history.
+    if is_passthrough_model(getattr(session, "model", None)):
+        raise HTTPException(400, "Passthrough chats are not compacted")
 
 
 def _reject_compact_during_active_run(session_id: str) -> None:
@@ -1224,6 +1233,7 @@ def setup_session_routes(
         except KeyError:
             raise HTTPException(404, f"Session {session_id} not found")
         _reject_compact_during_active_run(session_id)
+        _reject_passthrough_compaction(session)
 
         history = list(session.history or [])
         if len(history) < 6:
@@ -1252,7 +1262,7 @@ def setup_session_routes(
         )
         if not url or not model:
             url, model, headers = session.endpoint_url, session.model, session.headers
-        if not url or not model:
+        if not url or not model or is_passthrough_model(model):
             raise HTTPException(400, "No model configured for compaction")
 
         prior_compactions = sum(

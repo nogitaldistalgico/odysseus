@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request, HTTPException, Depends
 from core.models import ChatMessage
 from core.database import SessionLocal, ChatMessage as DbChatMessage, Session as DbSession
 from src.auth_helpers import effective_user, require_chat_api_token_scope
+from src.passthrough import is_passthrough_model
 from src.topic_analyzer import analyze_topics
 from src.upload_handler import reserve_message_upload_references
 from src.tool_approval_scopes import sanitize_client_message_metadata
@@ -19,6 +20,7 @@ from routes.session_routes import (
     _message_role,
     _message_text,
     _reject_compact_during_active_run,
+    _reject_passthrough_compaction,
     _verify_session_owner,
 )
 from routes.chat_helpers import strip_tui_local_context
@@ -1148,6 +1150,7 @@ def setup_history_routes(session_manager, upload_handler=None) -> APIRouter:
         except KeyError:
             raise HTTPException(404, "Session not found")
         _reject_compact_during_active_run(session_id)
+        _reject_passthrough_compaction(session)
 
         try:
             from src.model_context import estimate_tokens, get_context_length
@@ -1187,6 +1190,8 @@ def setup_history_routes(session_manager, upload_handler=None) -> APIRouter:
             compact_url = util_url or session.endpoint_url
             compact_model = util_model or session.model
             compact_headers = util_headers if util_url else session.headers
+            if is_passthrough_model(compact_model):
+                raise HTTPException(400, "No model configured for compaction")
 
             from src.context_compactor import SELF_SUMMARY_SYSTEM_PROMPT, normalize_compaction_summary
             compaction_count = sum(1 for m in session.history if isinstance(m, ChatMessage) and "[Conversation summary" in (m.content or ""))
@@ -1277,6 +1282,8 @@ def setup_history_routes(session_manager, upload_handler=None) -> APIRouter:
                 "after": pct_after,
             }
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Manual compact error {session_id}: {e}")
             raise HTTPException(500, str(e))
